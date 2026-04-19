@@ -143,7 +143,7 @@ Critical requirements:
 | `text_and_media` | `textAndMedia` | `textAndMediaBlocks` | `textAndMediaBlock` | grouped | `blockLayout` |
 | `faq` | `faq` | `accordionItems` | `accordionItem` | repeated | `richText`, `extraRichText`, `actionButtons` (via `faqNodes`) |
 | `cards` | `copydeckCards` | `copydeckCards` | `copydeckCard` | repeated | `richText` (intro) |
-| `price_list` | `priceList` | *(none)* | — | outer fields only | `richText`, `priceList` |
+| `price_list` | `priceList` | *(none)* | — | outer fields only | `richText`, `priceList`, `actionButtons` (via `buttonNodes`) |
 | `usp` | `copydeckUsp` | *(none)* | — | outer fields only | `uspText` |
 | `global` | `copydeckGlobal` | *(none)* | — | outer fields only | `copydeckNotes` |
 
@@ -151,7 +151,7 @@ Critical requirements:
 
 | Copydeck type | What happens |
 |---|---|
-| `hero` | ContentBlock field `hero` on page entry: `heading`, `richText` (subheading + body), `desktopImage`, `actionButtons`. Sets `enableHero = true`. |
+| `hero` | ContentBlock field `hero` on page entry: `heading`, `richText` (subheading + body), `desktopImage`, `mobileImage`, `actionButtons`. Sets `enableHero = true`. |
 | `call_to_action` | Creates `callToActionEntry` in `callsToAction` section, relates via `chooseCallToAction` |
 | `table` | Skipped (no block type in Craft Starter) |
 
@@ -172,8 +172,9 @@ Critical requirements:
 | `layout` | string | pass through |
 | `textMediaLayout` | `image_right`/`image_left` | `text-left`/`image-left` |
 | `tableHtml` | `[{isHeader, cells}]` | `<table>` HTML string |
-| `hyperButton` | `{label, url}` | Hyper link field array |
+| `hyperButton` | `{label, url}` | Hyper link field array + `showLinkAsSeparateButton: true` |
 | `faqNodes` | `ContentNode[]` with `faq_items` | splits into `richText`, `extraRichText`, `actionButtons`, `_faqItems` |
+| `buttonNodes` | `ContentNode[]` with `ctaButton` nodes | extracts buttons into `actionButtons` Matrix entries |
 
 ### NodesRenderer supported node types
 
@@ -205,7 +206,7 @@ The importer creates entries in the `callsToAction` section (channel):
 - **Fields**: `title`, `richText` (CKEditor), `image` (Assets), `actionButtons` (Matrix → `actionButton` entries with Hyper `actionButton` field)
 - **Idempotent**: matches by title to avoid duplicates across batch imports
 
-The `actionButtons` field is a Matrix containing `actionButton` entry types. Each has one field: `actionButton` (Hyper). Buttons without a URL are skipped.
+The `actionButtons` field is a Matrix containing `actionButton` entry types. Each has one field: `actionButton` (Hyper). Buttons include `linkClass: 'btn btn-primary'`. Buttons without both a label and URL are skipped.
 
 ---
 
@@ -215,7 +216,19 @@ The `actionButtons` field is a Matrix containing `actionButton` entry types. Eac
 php craft copydeck-importer/import --file=export.json [--dry-run] [--verbose]
 ```
 
-Supports single-page (top-level `blocks`) and batch (top-level `pages`) JSON formats.
+Supports single-page (top-level `blocks`) and batch (top-level `pages`) JSON formats. `$defaultAction = 'import'` so the repeated `/import` suffix is not needed.
+
+### Per-entry widget sync
+
+The sidebar widget calls `GET /api/v1/projects/{projectSlug}/pages/{slug}/export` for single-page sync. Slug is mapped via `config/copydeck.php` `slugMap` when Craft and Copydeck slugs differ.
+
+### Locked entries
+
+Entries with `copydeck_entry_syncs.locked = true` are skipped during:
+- Batch syncs (SyncJob) — logged as "Skipped — entry is locked" in the report
+- The sidebar Sync button is disabled when locked
+
+Lock state is toggled via the CSS lightswitch in the sidebar widget and persisted immediately via `copydeck-importer/cp/toggle-lock`.
 
 ---
 
@@ -332,15 +345,26 @@ Both pages and homepage use a `craft\fields\ContentBlock` field (`heroContent`, 
             'heading'       => '<h1>Title</h1>',
             'richText'      => '<h2>Subheading</h2><p>Body text</p>',
             'desktopImage'  => [$assetId],
+            'mobileImage'   => [$mobileAssetId],  // optional
             'actionButtons' => [
-                'new1' => ['type' => 'actionButton', 'fields' => ['actionButton' => [hyperData]]],
+                'new1' => ['type' => 'actionButton', 'fields' => [
+                    'actionButton' => [[
+                        'type'      => 'verbb\\hyper\\links\\Url',
+                        'handle'    => 'default-verbb-hyper-links-url',
+                        'linkValue' => 'https://...',
+                        'linkText'  => 'Button Label',
+                        'linkClass' => 'btn btn-primary',
+                    ]],
+                ]],
             ],
         ],
     ],
 ]
 ```
 
-The `subheading` field (optional `{level, text}` object) is rendered as an `<hN>` tag prepended to the body text in `richText`.
+- `subheading` (optional `{level, text}`) rendered as `<hN>` prepended to body in `richText`
+- `mobile_image` (optional `{key, url, alt}`) imported to `mobileImage` asset field
+- `buttons` array imported to `actionButtons` Matrix with Hyper link data including `linkClass`
 
 ---
 
@@ -578,6 +602,36 @@ After a successful sync, a "Reload" link appears next to the timestamp so the ed
 ### Error messages
 
 User-facing error messages use the entry title (not slug) for readability. The widget looks up the title from the element ID.
+
+---
+
+## Database tables
+
+### `copydeck_import_runs`
+
+Stores import/sync history. Created by `Install` migration.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | int PK | Auto-increment |
+| `importedBy` | int FK → users | Nullable |
+| `filename` | varchar(255) | Source filename or `'sync'` |
+| `type` | varchar(10) | `'single'`, `'batch'`, or `'sync'` |
+| `pageCount` | int | Pages imported |
+| `imageCount` | int | Images imported |
+| `status` | varchar(20) | `'pending'`, `'success'`, `'warnings'`, or `'errors'` |
+| `result` | longtext | JSON-encoded page results array |
+
+### `copydeck_entry_syncs`
+
+Per-entry sync state for the sidebar widget. Created by `m250418_000000_add_entry_syncs_table`.
+
+| Column | Type | Description |
+|---|---|---|
+| `element_id` | int PK, FK → elements | Entry ID |
+| `locked` | boolean | Skip during batch sync when true |
+| `synced_at` | datetime | Last successful sync timestamp |
+| `notes` | text | Aggregated block notes from last sync |
 
 ---
 
