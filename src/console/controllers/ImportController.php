@@ -6,6 +6,7 @@ use Craft;
 use craft\console\Controller;
 use craft\helpers\App;
 use craft\helpers\Console;
+use craft\elements\Entry;
 use matrixcreate\copydeckimporter\CopydeckImporter;
 use yii\console\ExitCode;
 
@@ -44,6 +45,13 @@ class ImportController extends Controller
      * @var bool Whether to output verbose block-by-block and image logging.
      */
     public bool $verbose = false;
+
+    /**
+     * Entry ID from the most recent _runSinglePage call (used for hierarchy).
+     *
+     * @var int|null
+     */
+    private ?int $_lastEntryId = null;
 
     // Public Methods
     // =========================================================================
@@ -153,13 +161,70 @@ class ImportController extends Controller
     {
         $this->stdout(sprintf("Batch import: %d pages\n", count($pages)));
 
-        $exitCode = ExitCode::OK;
+        $exitCode      = ExitCode::OK;
+        $slugToEntryId = [];
+
+        // Resolve section for structure positioning.
+        $config        = Craft::$app->config->getConfigFromFile('copydeck');
+        $sectionHandle = $config['section'] ?? 'pages';
+        $section       = Craft::$app->entries->getSectionByHandle($sectionHandle);
+        $structureId   = $section?->structureId;
+        $structures    = Craft::$app->getStructures();
 
         foreach ($pages as $i => $pageData) {
             $this->stdout(sprintf("\n[%d/%d] ", $i + 1, count($pages)), Console::FG_GREY);
             $result = $this->_runSinglePage($pageData, $importService);
+
             if ($result !== ExitCode::OK) {
                 $exitCode = ExitCode::UNSPECIFIED_ERROR;
+            }
+
+            // Handle hierarchy after import.
+            $isHomepage = (bool)($pageData['document']['is_homepage'] ?? false);
+
+            if (!$this->dryRun && $structureId !== null && !$isHomepage) {
+                $slug       = $pageData['document']['slug'] ?? '';
+                $parentSlug = $pageData['document']['parent_slug'] ?? null;
+                $entryId    = $this->_lastEntryId;
+
+                if ($entryId !== null && $slug !== '') {
+                    $slugToEntryId[$slug] = $entryId;
+                }
+
+                if ($entryId !== null) {
+                    $entry = Entry::find()->id($entryId)->status(null)->one();
+
+                    if ($entry !== null) {
+                        try {
+                            if ($parentSlug !== null && $parentSlug !== '') {
+                                // Try current-batch map first, then fall back to a Craft query
+                                // so re-imports correctly place children under existing parents.
+                                $parentId = $slugToEntryId[$parentSlug] ?? null;
+
+                                if ($parentId === null) {
+                                    $parentEntry = Entry::find()
+                                        ->section($sectionHandle)
+                                        ->slug($parentSlug)
+                                        ->status(null)
+                                        ->one();
+                                    $parentId = $parentEntry?->id;
+                                }
+
+                                if ($parentId !== null) {
+                                    $structures->append($structureId, $entry, $parentId);
+                                    $this->stdout("  Parent: {$parentSlug}\n", Console::FG_GREEN);
+                                } else {
+                                    $structures->appendToRoot($structureId, $entry);
+                                    $this->stdout("  Parent: '{$parentSlug}' not found — saved at root\n", Console::FG_YELLOW);
+                                }
+                            } else {
+                                $structures->appendToRoot($structureId, $entry);
+                            }
+                        } catch (\Throwable $e) {
+                            $this->stdout("  Structure: failed — {$e->getMessage()}\n", Console::FG_YELLOW);
+                        }
+                    }
+                }
             }
         }
 
@@ -177,9 +242,18 @@ class ImportController extends Controller
     {
         $result = $importService->importPage($data, $this->dryRun, $this->verbose);
 
+        // Store entry ID for hierarchy resolution in _runBatch.
+        $this->_lastEntryId = $result['entryId'] ?? null;
+
         $prefix = $this->dryRun ? '[DRY RUN] ' : '';
 
-        $this->stdout("{$prefix}Page: {$result['slug']}\n", Console::BOLD);
+        $isHomepage = (bool)($data['document']['is_homepage'] ?? false);
+
+        $this->stdout("{$prefix}Page: {$result['slug']}", Console::BOLD);
+        if ($isHomepage) {
+            $this->stdout(" (homepage)", Console::FG_CYAN);
+        }
+        $this->stdout("\n");
         $this->stdout("  Entry: ");
 
         if ($result['entryFound']) {

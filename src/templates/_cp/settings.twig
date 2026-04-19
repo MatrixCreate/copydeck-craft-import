@@ -1,0 +1,31 @@
+{% import '_includes/forms' as forms %}
+
+{{ forms.textField({
+    label: 'Copydeck URL'|t('copydeck-importer'),
+    instructions: 'The base URL of your Copydeck instance (e.g. https://copydeck.agency.com).'|t('copydeck-importer'),
+    id: 'copydeckUrl',
+    name: 'copydeckUrl',
+    value: settings.copydeckUrl,
+    placeholder: 'https://copydeck.agency.com',
+    errors: settings.getErrors('copydeckUrl'),
+}) }}
+
+{{ forms.textField({
+    label: 'Project Slug'|t('copydeck-importer'),
+    instructions: 'The Copydeck project slug used in the API endpoint.'|t('copydeck-importer'),
+    id: 'projectSlug',
+    name: 'projectSlug',
+    value: settings.projectSlug,
+    placeholder: 'my-project',
+    errors: settings.getErrors('projectSlug'),
+}) }}
+
+{{ forms.passwordField({
+    label: 'API Key'|t('copydeck-importer'),
+    instructions: 'The project API key from Copydeck project settings.'|t('copydeck-importer'),
+    id: 'apiKey',
+    name: 'apiKey',
+    value: settings.apiKey,
+    placeholder: 'Enter your API key',
+    errors: settings.getErrors('apiKey'),
+}) }}

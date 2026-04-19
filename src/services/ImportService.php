@@ -86,20 +86,27 @@ class ImportService extends Component
             $title = $data['document']['title'] ?? $slug;
             $result['slug'] = $slug;
 
+            $isHomepage = (bool)($data['document']['is_homepage'] ?? false);
+
             // -----------------------------------------------------------------------
             // 3. Resolve section and entry type.
             // -----------------------------------------------------------------------
-            $sectionHandle   = $config['section'] ?? 'pages';
-            $entryTypeHandle = $config['entryType'] ?? 'page';
+            if ($isHomepage) {
+                $sectionHandle   = $config['homepageSection'] ?? 'homepage';
+                $entryTypeHandle = $config['homepageEntryType'] ?? 'homepage';
+            } else {
+                $sectionHandle   = $config['section'] ?? 'pages';
+                $entryTypeHandle = $config['entryType'] ?? 'page';
+            }
 
             $section = Craft::$app->entries->getSectionByHandle($sectionHandle);
             if ($section === null) {
-                return $this->_fatal($result, "Section '{$sectionHandle}' not found in Craft. Check 'section' in config/copydeck.php.");
+                return $this->_fatal($result, "Section '{$sectionHandle}' not found in Craft. Check config/copydeck.php.");
             }
 
             $entryType = Craft::$app->entries->getEntryTypeByHandle($entryTypeHandle);
             if ($entryType === null) {
-                return $this->_fatal($result, "Entry type '{$entryTypeHandle}' not found in Craft. Check 'entryType' in config/copydeck.php.");
+                return $this->_fatal($result, "Entry type '{$entryTypeHandle}' not found in Craft. Check config/copydeck.php.");
             }
 
             // -----------------------------------------------------------------------
@@ -151,16 +158,26 @@ class ImportService extends Component
             $seoPopulated = array_filter($seoValues, fn($v) => $v !== '' && $v !== null && $v !== []);
             $result['seoFieldCount'] = count($seoPopulated);
 
-            $heroData = $heroBlock !== null ? $this->_buildHeroField($heroBlock, $dryRun) : null;
+            // Both pages and homepage use the same hero ContentBlock field.
+            $heroData = $heroBlock !== null
+                ? $this->_buildHeroField($heroBlock, $dryRun)
+                : null;
 
             // -----------------------------------------------------------------------
-            // 8. Find existing entry by slug.
+            // 8. Find existing entry (Singles always exist; Structures match by slug).
             // -----------------------------------------------------------------------
-            $existing = Entry::find()
-                ->section($sectionHandle)
-                ->slug($slug)
-                ->status(null)
-                ->one();
+            if ($isHomepage) {
+                $existing = Entry::find()
+                    ->section($sectionHandle)
+                    ->status(null)
+                    ->one();
+            } else {
+                $existing = Entry::find()
+                    ->section($sectionHandle)
+                    ->slug($slug)
+                    ->status(null)
+                    ->one();
+            }
 
             if ($existing !== null) {
                 $result['entryFound'] = true;
@@ -226,7 +243,9 @@ class ImportService extends Component
                 $filteredValues = $this->_filterToValidFields($fieldValues, $existing->getFieldLayout(), $result);
                 $result['seoFieldCount'] = $this->_countSeoFields($filteredValues, $config);
 
-                $existing->title = $title;
+                if (!$isHomepage) {
+                    $existing->title = $title;
+                }
                 $existing->setFieldValues($filteredValues);
 
                 if (!Craft::$app->getElements()->saveElement($existing, false)) {
@@ -449,47 +468,137 @@ class ImportService extends Component
      */
     private function _buildHeroField(array $heroBlock, bool $dryRun): ?array
     {
-        $fields     = $heroBlock['fields'] ?? [];
-        $heroFields = [];
+        $innerFields = $this->_buildHeroInnerFields($heroBlock, $dryRun);
 
-        // heroTitle — heading (h1 allowed for hero, unlike content block headings).
+        if (empty($innerFields)) {
+            return null;
+        }
+
+        // hero is a ContentBlock field (handle override on heroContent).
+        // enableHero is a separate lightswitch on the pages entry type.
+        return [
+            'enableHero' => true,
+            'hero' => [
+                'fields' => $innerFields,
+            ],
+        ];
+    }
+
+    /**
+     * Builds the inner field values for a hero ContentBlock.
+     *
+     * Used by _buildHeroField for both pages and homepage (same ContentBlock).
+     * Inner field handles:
+     *   heading      → CKEditor (Page Heading H1, handle override)
+     *   richText     → CKEditor (subheading + body)
+     *   desktopImage → Assets
+     *   actionButtons → Matrix of actionButton entries
+     *
+     * @param array $heroBlock Raw hero block from the JSON.
+     * @param bool  $dryRun
+     * @return array Inner fields array (empty if nothing to set).
+     */
+    private function _buildHeroInnerFields(array $heroBlock, bool $dryRun): array
+    {
+        $fields      = $heroBlock['fields'] ?? [];
+        $innerFields = [];
+
+        // heading → <h1> CKEditor HTML
         if (isset($fields['heading'])) {
             $heading = $fields['heading'];
 
             if (is_array($heading) && isset($heading['text'])) {
                 $level = max(1, min(6, (int)($heading['level'] ?? 1)));
                 $text  = htmlspecialchars((string)$heading['text'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-                $heroFields['heroTitle'] = "<h{$level}>{$text}</h{$level}>";
+                $innerFields['heading'] = "<h{$level}>{$text}</h{$level}>";
             } elseif (is_string($heading) && $heading !== '') {
                 $text = htmlspecialchars($heading, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-                $heroFields['heroTitle'] = "<h1>{$text}</h1>";
+                $innerFields['heading'] = "<h1>{$text}</h1>";
             }
         }
 
-        // heroRichText — body text (handle override on pages entry type field layout).
-        if (isset($fields['body']) && is_string($fields['body']) && $fields['body'] !== '') {
-            $escaped = htmlspecialchars($fields['body'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-            $heroFields['heroRichText'] = "<p>{$escaped}</p>";
+        // richText → optional subheading + body text.
+        $richTextParts = [];
+
+        if (isset($fields['subheading'])) {
+            $sub = $fields['subheading'];
+            if (is_array($sub) && isset($sub['text']) && $sub['text'] !== '') {
+                $subLevel = max(2, min(6, (int)($sub['level'] ?? 2)));
+                $subText  = htmlspecialchars((string)$sub['text'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                $richTextParts[] = "<h{$subLevel}>{$subText}</h{$subLevel}>";
+            }
         }
 
-        // heroDesktopImage — primary image.
+        if (isset($fields['body']) && is_string($fields['body']) && $fields['body'] !== '') {
+            $escaped = htmlspecialchars($fields['body'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $richTextParts[] = "<p>{$escaped}</p>";
+        }
+
+        if (!empty($richTextParts)) {
+            $innerFields['richText'] = implode('', $richTextParts);
+        }
+
+        // desktopImage — primary image.
         if (isset($fields['image']) && is_array($fields['image']) && !empty($fields['image']['url'])) {
             $imageResult = CopydeckImporter::$plugin->images->importFromField($fields['image'], $dryRun);
-            $heroFields['heroDesktopImage'] = ($imageResult !== null && $imageResult['id'] !== null)
+            $innerFields['desktopImage'] = ($imageResult !== null && $imageResult['id'] !== null)
                 ? [$imageResult['id']]
                 : [];
         }
 
-        if (empty($heroFields)) {
-            return null;
+        // actionButtons — Matrix of actionButton entries with Hyper fields.
+        $buttons = $fields['buttons'] ?? [];
+        if (!empty($buttons) && is_array($buttons)) {
+            $actionButtonsData = [];
+            $btnCounter = 0;
+
+            foreach ($buttons as $button) {
+                $label = (string)($button['label'] ?? '');
+                $url   = (string)($button['url'] ?? '');
+
+                if ($label === '' && $url === '') {
+                    continue;
+                }
+
+                $actionButtonsData['new' . (++$btnCounter)] = [
+                    'type'   => 'actionButton',
+                    'fields' => [
+                        'actionButton' => [
+                            [
+                                'type'      => 'verbb\\hyper\\links\\Url',
+                                'handle'    => 'default-verbb-hyper-links-url',
+                                'linkValue' => $url,
+                                'linkText'  => $label,
+                            ],
+                        ],
+                    ],
+                ];
+            }
+
+            if (!empty($actionButtonsData)) {
+                $innerFields['actionButtons'] = $actionButtonsData;
+            }
         }
 
-        // Enable the hero so it is visible on the page.
-        $heroFields['enableHero'] = true;
-
-        return $heroFields;
+        return $innerFields;
     }
 
+    /**
+     * Builds the homeHero ContentBlock field data for the homepage entry.
+     *
+     * The homeHero is a craft\fields\ContentBlock containing:
+     *   desktopImage → Assets
+     *   mobileImage  → Assets
+     *   heading      → CKEditor (Page Heading H1, handle override)
+     *   richText     → CKEditor
+     *
+     * Data shape for ContentBlock fields:
+     *   ['homeHero' => ['fields' => [handle => value, ...]]]
+     *
+     * @param array $heroBlock Raw hero block from the JSON.
+     * @param bool  $dryRun
+     * @return array|null
+     */
     /**
      * Logs detailed validation errors from an element's field values for debugging.
      *

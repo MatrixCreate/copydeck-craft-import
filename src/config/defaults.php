@@ -72,13 +72,16 @@ return [
     'faq' => [
         'outerType'   => 'faq',
         'outerFields' => [
-            'nodes' => ['richText', 'nodes'],
+            // faqNodes splits nodes at faq_items boundary:
+            //   before → richText, after → extraRichText, items → _faqItems
+            'nodes' => ['richText', 'faqNodes'],
         ],
         'innerMatrix' => [
             'outerField' => 'accordionItems',
             'innerType'  => 'accordionItem',
             'mode'       => 'repeated',
-            'sourceKey'  => 'items',
+            'sourceKey'         => 'items',       // new: flat array from Copydeck
+            'fallbackSourceKey' => '_faqItems',   // legacy: extracted from nodes.faq_items
             'fields'     => [
                 'question' => ['itemTitle',   'heading'],  // plain string → <h3>
                 'answer'   => ['itemContent', 'body'],     // plain string → <p>
@@ -87,16 +90,18 @@ return [
     ],
 
     'cards' => [
-        'outerType'   => 'contentCards',
-        'outerFields' => [],
+        'outerType'   => 'copydeckCards',
+        'outerFields' => [
+            'intro' => ['richText', 'nodes'],  // ContentNode[] → HTML above card grid
+        ],
         'innerMatrix' => [
-            'outerField' => 'contentCards',
-            'innerType'  => 'contentCard',
+            'outerField' => 'copydeckCards',
+            'innerType'  => 'copydeckCard',
             'mode'       => 'repeated',
             'sourceKey'  => 'cards',
             'fields'     => [
                 'heading' => ['heading',      'heading'],     // {level,text} → <hN>
-                'body'    => ['richText',     'body'],        // plain string → <p>
+                'body'    => ['richText',     'nodes'],       // ContentNode[] → HTML via NodesRenderer
                 'image'   => ['image',        'image'],
                 'button'  => ['actionButton', 'hyperButton'], // {label,url} → Hyper link
             ],
@@ -108,6 +113,22 @@ return [
         'outerFields' => [
             'nodes' => ['richText',  'nodes'],     // heading nodes → CKEditor HTML
             'rows'  => ['priceList', 'tableHtml'], // rows array → HTML <table>
+        ],
+        'innerMatrix' => null,
+    ],
+
+    'usp' => [
+        'outerType'   => 'copydeckUsp',
+        'outerFields' => [
+            'nodes' => ['uspText', 'nodes'],  // heading + list → CKEditor HTML (richText with list support)
+        ],
+        'innerMatrix' => null,
+    ],
+
+    'global' => [
+        'outerType'   => 'copydeckGlobal',
+        'outerFields' => [
+            'nodes' => ['copydeckNotes', 'nodes'],  // rendered as HTML into notes field
         ],
         'innerMatrix' => null,
     ],

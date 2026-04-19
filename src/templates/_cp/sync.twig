@@ -1,0 +1,135 @@
+{% extends '_layouts/cp' %}
+
+{% set title = 'Sync from Copydeck' %}
+
+{% set crumbs = [
+    { label: 'Copydeck', url: url('copydeck-importer') },
+] %}
+
+{% block content %}
+
+    <div style="max-width:600px;">
+
+        <div class="pane" style="padding:24px; border-radius:8px;">
+
+            <div style="margin-bottom:20px;">
+                <div class="light" style="margin-bottom:4px; font-size:13px;">Copydeck Instance</div>
+                <div><strong>{{ copydeckUrl }}</strong></div>
+            </div>
+
+            <div style="margin-bottom:20px;">
+                <div class="light" style="margin-bottom:4px; font-size:13px;">Project</div>
+                <div><strong>{{ projectSlug }}</strong></div>
+            </div>
+
+            {# Sync button — triggers queue job #}
+            <div id="sync-idle">
+                <form method="post" id="sync-form">
+                    {{ csrfInput() }}
+                    {{ actionInput('copydeck-importer/cp/run-sync') }}
+                    <button type="submit" class="btn submit">
+                        {{ 'Sync'|t('copydeck-importer') }}
+                    </button>
+                </form>
+            </div>
+
+            {# Loading state — shown while job is running #}
+            <div id="sync-loading" style="display:none;">
+                <div style="display:flex; align-items:center; gap:12px; padding:16px 0;">
+                    <div class="spinner" style="display:block;"></div>
+                    <div>
+                        <strong>{{ 'Syncing content and downloading assets'|t('copydeck-importer') }}</strong>
+                        <div class="light" style="font-size:13px; margin-top:2px;">{{ 'This may take a moment for large imports.'|t('copydeck-importer') }}</div>
+                    </div>
+                </div>
+            </div>
+
+            {# Error state #}
+            <div id="sync-error" style="display:none;">
+                <div class="error" style="margin-top:12px;">
+                    <strong>{{ 'Sync failed'|t('copydeck-importer') }}</strong>
+                    <div id="sync-error-message"></div>
+                </div>
+                <div style="margin-top:12px;">
+                    <button type="button" class="btn" onclick="resetSync()">{{ 'Try Again'|t('copydeck-importer') }}</button>
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+
+    <script>
+    (function() {
+        var form = document.getElementById('sync-form');
+        var idleEl = document.getElementById('sync-idle');
+        var loadingEl = document.getElementById('sync-loading');
+        var errorEl = document.getElementById('sync-error');
+        var errorMsg = document.getElementById('sync-error-message');
+        var runId = null;
+        var pollTimer = null;
+
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+            idleEl.style.display = 'none';
+            loadingEl.style.display = 'block';
+            errorEl.style.display = 'none';
+
+            var formData = new FormData(form);
+
+            fetch(Craft.getActionUrl('copydeck-importer/cp/run-sync'), {
+                method: 'POST',
+                headers: { 'Accept': 'application/json' },
+                body: formData,
+            })
+            .then(function(resp) { return resp.json(); })
+            .then(function(data) {
+                if (data.success && data.runId) {
+                    runId = data.runId;
+                    // Kick Craft's queue runner so the job starts immediately.
+                    Craft.postActionRequest('queue/run');
+                    pollForCompletion();
+                } else {
+                    showError(data.error || 'An unexpected error occurred.');
+                }
+            })
+            .catch(function(err) {
+                showError(err.message || 'Network error.');
+            });
+        });
+
+        function pollForCompletion() {
+            pollTimer = setInterval(function() {
+                fetch(Craft.getCpUrl('copydeck-importer/sync/status') + '?runId=' + runId, {
+                    headers: { 'Accept': 'application/json' },
+                })
+                .then(function(resp) { return resp.json(); })
+                .then(function(data) {
+                    if (data.status === 'pending') {
+                        // Still running — keep polling.
+                        return;
+                    }
+                    clearInterval(pollTimer);
+                    // Redirect to sync report.
+                    window.location.href = Craft.getCpUrl('copydeck-importer/sync/result/' + runId);
+                })
+                .catch(function() {
+                    // Polling error — keep trying silently.
+                });
+            }, 2000);
+        }
+
+        function showError(msg) {
+            loadingEl.style.display = 'none';
+            errorEl.style.display = 'block';
+            errorMsg.textContent = msg;
+        }
+
+        window.resetSync = function() {
+            errorEl.style.display = 'none';
+            idleEl.style.display = 'block';
+        };
+    })();
+    </script>
+
+{% endblock %}

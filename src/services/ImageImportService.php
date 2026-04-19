@@ -4,8 +4,10 @@ namespace matrixcreate\copydeckimporter\services;
 
 use Craft;
 use craft\elements\Asset;
+use craft\helpers\Assets;
 use craft\models\Volume;
 use craft\models\VolumeFolder;
+use GuzzleHttp\RequestOptions;
 use Throwable;
 use yii\base\Component;
 use yii\base\Exception;
@@ -95,7 +97,9 @@ class ImageImportService extends Component
         }
 
         $url      = $imageField['url'];
-        $filename = $this->_filenameFromKey($imageField['key'] ?? '') ?: $this->_filenameFromUrl($url);
+        $rawFilename = $this->_filenameFromKey($imageField['key'] ?? '') ?: $this->_filenameFromUrl($url);
+        // Sanitize the same way Craft does on save — spaces become hyphens, etc.
+        $filename = Assets::prepareAssetName($rawFilename);
 
         if ($filename === '') {
             Craft::warning("Could not determine filename from image field: " . json_encode($imageField), __METHOD__);
@@ -181,16 +185,13 @@ class ImageImportService extends Component
         $tempPath = Craft::$app->getPath()->getTempPath() . DIRECTORY_SEPARATOR . uniqid('copydeck_') . '_' . $filename;
 
         try {
-            $content = @file_get_contents($url);
+            Craft::createGuzzleClient()->request('GET', $url, [
+                RequestOptions::SINK    => $tempPath,
+                RequestOptions::TIMEOUT => 30,
+            ]);
 
-            if ($content === false) {
-                Craft::warning("Failed to download image: $url", __METHOD__);
-
-                return null;
-            }
-
-            if (file_put_contents($tempPath, $content) === false) {
-                Craft::warning("Failed to write temp file for: $url", __METHOD__);
+            if (!is_file($tempPath) || filesize($tempPath) === 0) {
+                Craft::warning("Downloaded file is empty or missing: $url", __METHOD__);
 
                 return null;
             }

@@ -1,0 +1,123 @@
+{% extends '_layouts/cp' %}
+
+{% set title = 'Sync Report' %}
+
+{% set crumbs = [
+    { label: 'Copydeck', url: url('copydeck-importer') },
+] %}
+
+{% block actionButton %}
+    <a class="btn submit" href="{{ url('copydeck-importer/sync') }}">
+        {{ 'Sync Again'|t('copydeck-importer') }}
+    </a>
+{% endblock %}
+
+{% block content %}
+
+    {# Overall status banner #}
+    {% if run.status == 'success' %}
+        <div class="pane" style="background:var(--green-050); border:1px solid var(--green-300); margin-bottom:24px; padding:16px; border-radius:8px;">
+            <span class="status green"></span>
+            <strong>{{ 'Sync completed successfully'|t('copydeck-importer') }}</strong>
+        </div>
+    {% elseif run.status == 'warnings' %}
+        <div class="pane" style="background:var(--yellow-050); border:1px solid var(--yellow-300); margin-bottom:24px; padding:16px; border-radius:8px;">
+            <span class="status orange"></span>
+            <strong>{{ 'Sync completed with warnings'|t('copydeck-importer') }}</strong>
+        </div>
+    {% else %}
+        <div class="pane" style="background:var(--red-050); border:1px solid var(--red-300); margin-bottom:24px; padding:16px; border-radius:8px;">
+            <span class="status red"></span>
+            <strong>{{ 'Sync completed with errors'|t('copydeck-importer') }}</strong>
+        </div>
+    {% endif %}
+
+    {# Summary line #}
+    {% set pages = run.result ?? [] %}
+    {% set totalImages = 0 %}
+    {% set reusedImages = 0 %}
+    {% set totalWarnings = 0 %}
+    {% for page in pages %}
+        {% for img in page.images ?? [] %}
+            {% set totalImages = totalImages + 1 %}
+            {% if img.reused %}
+                {% set reusedImages = reusedImages + 1 %}
+            {% endif %}
+        {% endfor %}
+        {% set totalWarnings = totalWarnings + (page.warnings ?? [])|length %}
+    {% endfor %}
+
+    <div style="margin-bottom:24px; font-size:14px; color:var(--text-color);">
+        <strong>{{ pages|length }}</strong> {{ pages|length == 1 ? 'page' : 'pages' }} imported
+        &middot; <strong>{{ totalImages - reusedImages }}</strong> images downloaded
+        &middot; <strong>{{ reusedImages }}</strong> images reused
+        {% if totalWarnings > 0 %}
+            &middot; <strong style="color:var(--warning-color);">{{ totalWarnings }}</strong> {{ totalWarnings == 1 ? 'warning' : 'warnings' }}
+        {% endif %}
+    </div>
+
+    {# Hierarchical page tree #}
+    <div class="pane" style="border-radius:8px;">
+        <table class="data fullwidth">
+            <thead>
+                <tr>
+                    <th>{{ 'Page'|t('copydeck-importer') }}</th>
+                    <th>{{ 'Slug'|t('copydeck-importer') }}</th>
+                    <th>{{ 'Status'|t('copydeck-importer') }}</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for page in pages %}
+                    {% set depth = page.depth ?? 0 %}
+                    {% set indent = depth * 24 %}
+                    <tr>
+                        <td style="padding-left:{{ 12 + indent }}px;">
+                            {% if depth > 0 %}
+                                <span style="color:var(--hairline-color); margin-right:4px;">{% for i in 1..depth %}&mdash;{% endfor %}</span>
+                            {% endif %}
+                            <strong>{{ page.title ?? page.slug ?? '?' }}</strong>
+                        </td>
+                        <td><code style="font-size:12px;">{{ page.slug ?? '?' }}</code></td>
+                        <td>
+                            {% if page.success ?? false %}
+                                {% if page.entryFound ?? false %}
+                                    <span class="status blue"></span> Updated
+                                {% else %}
+                                    <span class="status green"></span> Created
+                                {% endif %}
+                            {% else %}
+                                <span class="status red"></span> Failed
+                            {% endif %}
+                        </td>
+                        <td class="thin" style="white-space:nowrap;">
+                            {% if page.entryId ?? null %}
+                                <a href="{{ cpUrl('entries/pages/' ~ page.entryId) }}" class="btn small" title="Edit in CP">
+                                    {{ 'Edit'|t('copydeck-importer') }}
+                                </a>
+                                <a href="{{ siteUrl(page.slug ?? '') }}" class="btn small" target="_blank" title="View on site">
+                                    {{ 'View'|t('copydeck-importer') }}
+                                </a>
+                            {% endif %}
+                        </td>
+                    </tr>
+
+                    {# Inline warnings #}
+                    {% if (page.warnings ?? [])|length or page.error ?? null %}
+                        <tr>
+                            <td colspan="4" style="padding-left:{{ 12 + indent + 16 }}px; border-top:none; padding-top:0;">
+                                {% if page.error ?? null %}
+                                    <div class="error" style="font-size:13px;">{{ page.error }}</div>
+                                {% endif %}
+                                {% for warning in page.warnings ?? [] %}
+                                    <div class="warning" style="font-size:13px;">{{ warning }}</div>
+                                {% endfor %}
+                            </td>
+                        </tr>
+                    {% endif %}
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+{% endblock %}

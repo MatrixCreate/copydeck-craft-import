@@ -1,0 +1,72 @@
+{% extends '_layouts/cp' %}
+
+{% set title = 'Import History' %}
+
+{% set crumbs = [
+    { label: 'Copydeck', url: url('copydeck-importer') },
+] %}
+
+{% block actionButton %}
+    <a class="btn submit add icon" href="{{ url('copydeck-importer/upload') }}">
+        {{ 'New Import'|t('copydeck-importer') }}
+    </a>
+{% endblock %}
+
+{% block content %}
+
+    {% if runs|length %}
+        <table class="data fullwidth">
+            <thead>
+                <tr>
+                    <th>{{ 'Date'|t('copydeck-importer') }}</th>
+                    <th>{{ 'File'|t('copydeck-importer') }}</th>
+                    <th>{{ 'Type'|t('copydeck-importer') }}</th>
+                    <th>{{ 'Pages'|t('copydeck-importer') }}</th>
+                    <th>{{ 'Images'|t('copydeck-importer') }}</th>
+                    <th>{{ 'Status'|t('copydeck-importer') }}</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for run in runs %}
+                    <tr>
+                        <td>{{ run.dateCreated|datetime('short') }}</td>
+                        <td><code>{{ run.filename }}</code></td>
+                        <td>
+                            {% if run.type == 'batch' %}
+                                <span class="status" style="color:var(--ui-control-color)"></span> Batch
+                            {% elseif run.type == 'sync' %}
+                                <span class="status blue"></span> Sync
+                            {% else %}
+                                Single
+                            {% endif %}
+                        </td>
+                        <td>{{ run.pageCount }}</td>
+                        <td>{{ run.imageCount }}</td>
+                        <td>
+                            {% if run.status == 'success' %}
+                                <span class="status green"></span> {{ 'Success'|t('copydeck-importer') }}
+                            {% elseif run.status == 'warnings' %}
+                                <span class="status orange"></span> {{ 'Warnings'|t('copydeck-importer') }}
+                            {% elseif run.status == 'pending' %}
+                                <span class="status"></span> {{ 'In Progress'|t('copydeck-importer') }}
+                            {% else %}
+                                <span class="status red"></span> {{ 'Errors'|t('copydeck-importer') }}
+                            {% endif %}
+                        </td>
+                        <td class="thin">
+                            <a href="{{ url('copydeck-importer/result/' ~ run.id) }}" class="btn small">
+                                {{ 'View'|t('copydeck-importer') }}
+                            </a>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <div class="zilch">
+            <p>{{ 'No imports yet.'|t('copydeck-importer') }}</p>
+        </div>
+    {% endif %}
+
+{% endblock %}

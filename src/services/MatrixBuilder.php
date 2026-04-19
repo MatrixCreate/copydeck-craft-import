@@ -291,6 +291,12 @@ class MatrixBuilder extends Component
             $resolved = $this->_resolveFieldByHandler($handlerType, $craftHandle, $value, $imageReport, $dryRun);
 
             foreach ($resolved as $handle => $fieldValue) {
+                // Internal keys (prefixed _) are injected into sourceFields for
+                // inner matrix resolution — they are not Craft field values.
+                if (str_starts_with($handle, '_')) {
+                    $sourceFields[$handle] = $fieldValue;
+                    continue;
+                }
                 $outerFields[$handle] = $fieldValue;
                 $reportedFields[]     = $handle;
             }
@@ -324,6 +330,12 @@ class MatrixBuilder extends Component
         } else {
             $sourceKey   = $innerConfig['sourceKey'] ?? '';
             $items       = $sourceFields[$sourceKey] ?? [];
+
+            // Fallback source key — used when primary is empty (e.g. FAQ
+            // items may come from fields.items or from _faqItems via nodes).
+            if (empty($items) && isset($innerConfig['fallbackSourceKey'])) {
+                $items = $sourceFields[$innerConfig['fallbackSourceKey']] ?? [];
+            }
             $innerCounter = 0;
 
             foreach ($items as $item) {
@@ -414,6 +426,7 @@ class MatrixBuilder extends Component
             'textMediaLayout' => $this->_handleTextMediaLayout($craftHandle, $value),
             'tableHtml'       => $this->_handleTableHtml($craftHandle, $value),
             'hyperButton'     => $this->_handleHyperButton($craftHandle, $value),
+            'faqNodes'        => $this->_handleFaqNodes($craftHandle, $value),
             default           => $this->_handlePassThrough($craftHandle, $value),
         };
     }
@@ -629,5 +642,91 @@ class MatrixBuilder extends Component
             ],
             'showLinkAsSeparateButton' => true,
         ];
+    }
+
+    /**
+     * Splits a FAQ nodes array into richText (before), accordion items, and extraRichText (after).
+     *
+     * The nodes array may contain headings, paragraphs, and a single faq_items node.
+     * Content before faq_items → richText (rendered as HTML).
+     * The faq_items node → returned under the _faqItems key for the caller to handle.
+     * Content after faq_items → extraRichText (rendered as HTML).
+     * ctaButton nodes are skipped.
+     *
+     * @param string $handle Ignored — this handler returns multiple fixed handles.
+     * @param mixed  $value  The nodes array from the Copydeck FAQ block.
+     * @return array<string, mixed>
+     */
+    private function _handleFaqNodes(string $handle, mixed $value): array
+    {
+        if (!is_array($value) || empty($value)) {
+            return ['richText' => '', 'extraRichText' => '', '_faqItems' => []];
+        }
+
+        $beforeNodes    = [];
+        $afterNodes     = [];
+        $faqItems       = [];
+        $ctaButtons     = [];
+        $foundFaqItems  = false;
+
+        foreach ($value as $node) {
+            $type = $node['type'] ?? '';
+
+            if ($type === 'faq_items') {
+                $faqItems      = $node['faqItems'] ?? [];
+                $foundFaqItems = true;
+                continue;
+            }
+
+            if ($type === 'ctaButton') {
+                // Collect CTA buttons as actionButtons Matrix entries.
+                $label = (string)($node['label'] ?? '');
+                $url   = (string)($node['url'] ?? '');
+
+                if ($label !== '' || $url !== '') {
+                    $ctaButtons[] = [
+                        'type'   => 'actionButton',
+                        'fields' => [
+                            'actionButton' => [
+                                [
+                                    'type'      => 'verbb\\hyper\\links\\Url',
+                                    'handle'    => 'default-verbb-hyper-links-url',
+                                    'linkValue' => $url,
+                                    'linkText'  => $label,
+                                ],
+                            ],
+                        ],
+                    ];
+                }
+                continue;
+            }
+
+            if ($foundFaqItems) {
+                $afterNodes[] = $node;
+            } else {
+                $beforeNodes[] = $node;
+            }
+        }
+
+        $renderer = CopydeckImporter::$plugin->nodes;
+
+        // Build actionButtons Matrix data from collected CTA buttons.
+        $actionButtonsData = [];
+        $btnCounter = 0;
+        foreach ($ctaButtons as $btn) {
+            $actionButtonsData['new' . (++$btnCounter)] = $btn;
+        }
+
+        $result = [
+            'richText'      => $renderer->render($beforeNodes),
+            'extraRichText' => $renderer->render($afterNodes),
+            '_faqItems'     => $faqItems,
+        ];
+
+        if (!empty($actionButtonsData)) {
+            $result['actionButtons'] = $actionButtonsData;
+        }
+
+        return $result;
     }
 }

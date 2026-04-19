@@ -65,8 +65,10 @@ class NodesRenderer extends Component
         return match ($type) {
             'heading'        => $this->_renderHeading($node),
             'paragraph'      => $this->_renderParagraph($node),
+            'list'           => $this->_renderList($node, !empty($node['ordered']) ? 'ol' : 'ul'),
             'ordered_list'   => $this->_renderList($node, 'ol'),
             'unordered_list' => $this->_renderList($node, 'ul'),
+            'faq_items'      => $this->_renderFaqItems($node),
             default          => '',
         };
     }
@@ -125,5 +127,38 @@ class NodesRenderer extends Component
         }
 
         return "<{$tag}>{$lis}</{$tag}>";
+    }
+
+    /**
+     * Renders a faq_items node as a nested list.
+     *
+     * Each FAQ item becomes a <li> with the question, containing a nested
+     * <ul><li> with the answer.
+     *
+     * @param array $node
+     * @return string
+     */
+    private function _renderFaqItems(array $node): string
+    {
+        $items = $node['faqItems'] ?? [];
+
+        if (empty($items)) {
+            return '';
+        }
+
+        $html = '<ul>';
+
+        foreach ($items as $item) {
+            $question = htmlspecialchars($item['question'] ?? '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $answer   = htmlspecialchars($item['answer'] ?? '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+            if ($question !== '' || $answer !== '') {
+                $html .= "<li>{$question}<ul><li>{$answer}</li></ul></li>";
+            }
+        }
+
+        $html .= '</ul>';
+
+        return $html;
     }
 }

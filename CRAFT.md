@@ -137,19 +137,21 @@ Critical requirements:
 
 ### Standard blocks (MatrixBuilder handles these)
 
-| Copydeck type | Outer entry type | Inner Matrix | Inner type | Mode |
-|---|---|---|---|---|
-| `text` | `text` | `textBlocks` | `textBlock` | single |
-| `text_and_media` | `textAndMedia` | `textAndMediaBlocks` | `textAndMediaBlock` | grouped |
-| `faq` | `faq` | `accordionItems` | `accordionItem` | repeated |
-| `cards` | `contentCards` | `contentCards` | `contentCard` | repeated |
-| `price_list` | `priceList` | *(none)* | — | outer fields only |
+| Copydeck type | Outer entry type | Inner Matrix | Inner type | Mode | Outer fields |
+|---|---|---|---|---|---|
+| `text` | `text` | `textBlocks` | `textBlock` | single | — |
+| `text_and_media` | `textAndMedia` | `textAndMediaBlocks` | `textAndMediaBlock` | grouped | `blockLayout` |
+| `faq` | `faq` | `accordionItems` | `accordionItem` | repeated | `richText`, `extraRichText`, `actionButtons` (via `faqNodes`) |
+| `cards` | `copydeckCards` | `copydeckCards` | `copydeckCard` | repeated | `richText` (intro) |
+| `price_list` | `priceList` | *(none)* | — | outer fields only | `richText`, `priceList` |
+| `usp` | `copydeckUsp` | *(none)* | — | outer fields only | `uspText` |
+| `global` | `copydeckGlobal` | *(none)* | — | outer fields only | `copydeckNotes` |
 
 ### Special blocks (ImportService handles these)
 
 | Copydeck type | What happens |
 |---|---|
-| `hero` | Flat fields on page entry: `heroTitle`, `heroRichText`, `heroDesktopImage`, `enableHero` |
+| `hero` | ContentBlock field `hero` on page entry: `heading`, `richText` (subheading + body), `desktopImage`, `actionButtons`. Sets `enableHero = true`. |
 | `call_to_action` | Creates `callToActionEntry` in `callsToAction` section, relates via `chooseCallToAction` |
 | `table` | Skipped (no block type in Craft Starter) |
 
@@ -163,13 +165,26 @@ Critical requirements:
 
 | Handler | Input | Output |
 |---|---|---|
-| `nodes` | nodes array | HTML string via NodesRenderer |
+| `nodes` | `ContentNode[]` | HTML string via NodesRenderer |
 | `image` | `{key, url, alt}` | asset ID array `[$id]` |
 | `heading` | `{level, text}` or string | `<hN>text</hN>` |
-| `body` | plain string | `<p>text</p>` |
+| `body` | plain string | `<p>text</p>` (legacy — use `nodes` for structured content) |
 | `layout` | string | pass through |
 | `textMediaLayout` | `image_right`/`image_left` | `text-left`/`image-left` |
 | `tableHtml` | `[{isHeader, cells}]` | `<table>` HTML string |
+| `hyperButton` | `{label, url}` | Hyper link field array |
+| `faqNodes` | `ContentNode[]` with `faq_items` | splits into `richText`, `extraRichText`, `actionButtons`, `_faqItems` |
+
+### NodesRenderer supported node types
+
+| Node type | Output |
+|---|---|
+| `heading` | `<h1>`–`<h6>` (clamped) |
+| `paragraph` | `<p>` |
+| `list` | `<ul>` or `<ol>` (based on `ordered` flag) |
+| `ordered_list` | `<ol>` (legacy alias) |
+| `unordered_list` | `<ul>` (legacy alias) |
+| `faq_items` | nested `<ul><li>question<ul><li>answer</li></ul></li></ul>` |
 
 ---
 
@@ -196,10 +211,161 @@ The `actionButtons` field is a Matrix containing `actionButton` entry types. Eac
 ## Import command
 
 ```
-php craft copydeck-importer/import/import --file=export.json [--dry-run] [--verbose]
+php craft copydeck-importer/import --file=export.json [--dry-run] [--verbose]
 ```
 
 Supports single-page (top-level `blocks`) and batch (top-level `pages`) JSON formats.
+
+---
+
+## Plugin settings (Craft 5 pattern)
+
+Settings are stored via Craft's built-in plugin settings mechanism (project config).
+
+```php
+// Model: src/models/Settings.php
+class Settings extends \craft\base\Model
+{
+    public string $copydeckUrl = '';
+    public string $apiKey = '';
+    public string $projectSlug = '';
+}
+
+// Plugin class:
+public bool $hasCpSettings = true;
+
+protected function createSettingsModel(): ?Model
+{
+    return new Settings();
+}
+
+protected function settingsHtml(): ?string
+{
+    return Craft::$app->view->renderTemplate(
+        'copydeck-importer/_cp/settings',
+        ['settings' => $this->getSettings()],
+    );
+}
+
+// Access anywhere:
+$settings = CopydeckImporter::$plugin->getSettings();
+```
+
+Template uses `{% import '_includes/forms' as forms %}` with standard Craft form macros. The `settings` namespace is handled automatically by Craft's settings response.
+
+---
+
+## Hierarchy / parent entries (Structure sections)
+
+For entries in Structure sections, set the parent after the entry is saved:
+
+```php
+// By parent entry ID:
+$entry->setParentId($parentId);
+Craft::$app->getElements()->saveElement($entry, false);
+
+// Or by parent object (auto-sets level):
+$entry->setParent($parentEntry);
+Craft::$app->getElements()->saveElement($entry, false);
+```
+
+The batch importer maintains a `$slugToEntryId` map during the run so parent lookups don't require DB queries. Pages must be sorted depth-first (parents before children) in the JSON.
+
+If `parent_slug` is present in `document`, the importer sets the parent. If the parent slug isn't found in the map, a warning is logged and the entry is saved at root level.
+
+---
+
+## Copydeck API sync
+
+The sync flow uses Craft's queue system to avoid HTTP timeouts:
+
+1. Controller creates a `pending` import run record
+2. Pushes `SyncJob` to Craft's queue with the run ID
+3. Frontend polls `sync/status?runId=N` until status changes from `pending`
+4. Queue job: fetches export via `CopydeckApiService`, imports each page, updates the run record
+
+API call uses `Craft::createGuzzleClient()` — the recommended HTTP client in Craft 5.
+
+```php
+$response = Craft::createGuzzleClient()->request('GET', $endpoint, [
+    RequestOptions::HEADERS => [
+        'Authorization' => "Bearer {$apiKey}",
+        'Accept'        => 'application/json',
+    ],
+    RequestOptions::TIMEOUT => 120,
+]);
+```
+
+---
+
+## Copydeck Cards staging block
+
+Cards from Copydeck import to `copydeckCards` (not `contentCards`). This is a staging block — editors manually migrate cards to the appropriate final block type with proper entry links. Copydeck can't know which card type to use or what internal links to set.
+
+Card body fields are `ContentNode[]` arrays (not plain strings), processed through `NodesRenderer`. This supports paragraphs, lists, and embedded FAQ items in card content.
+
+The `intro` field on the outer `copydeckCards` entry is also a `ContentNode[]` array, rendered to the `richText` CKEditor field above the card grid.
+
+---
+
+## Homepage import
+
+Pages with `"is_homepage": true` in the document object import into the `homepage` Single section instead of the `pages` Structure. The importer:
+
+- Looks up the Single entry by section (not slug — Singles always have exactly one)
+- Does not overwrite the title
+- Skips structure positioning (Singles don't have parents)
+- Uses the same `hero` ContentBlock field as pages
+
+---
+
+## Hero ContentBlock field
+
+Both pages and homepage use a `craft\fields\ContentBlock` field (`heroContent`, handle override `hero`) for hero data. The importer builds the ContentBlock value as:
+
+```php
+[
+    'enableHero' => true,
+    'hero' => [
+        'fields' => [
+            'heading'       => '<h1>Title</h1>',
+            'richText'      => '<h2>Subheading</h2><p>Body text</p>',
+            'desktopImage'  => [$assetId],
+            'actionButtons' => [
+                'new1' => ['type' => 'actionButton', 'fields' => ['actionButton' => [hyperData]]],
+            ],
+        ],
+    ],
+]
+```
+
+The `subheading` field (optional `{level, text}` object) is rendered as an `<hN>` tag prepended to the body text in `richText`.
+
+---
+
+## Slug mapping
+
+When the Craft slug differs from the Copydeck slug (e.g. homepage → home), configure a mapping in `config/copydeck.php`:
+
+```php
+'slugMap' => [
+    'homepage' => 'home',
+],
+```
+
+Used by the sidebar widget sync to translate Craft slugs to Copydeck API slugs.
+
+---
+
+## Asset filename sanitization
+
+Filenames from Copydeck keys are sanitized via `craft\helpers\Assets::prepareAssetName()` before the idempotency lookup. Craft converts spaces to hyphens on save (e.g. `Styles - Luxury - Card Image.jpg` → `Styles-Luxury-Card-Image.jpg`), so the lookup must use the sanitized name to find existing assets.
+
+---
+
+## Image downloads use Guzzle
+
+Image downloads use `Craft::createGuzzleClient()` instead of `file_get_contents()`. This handles self-signed SSL certificates on dev domains (e.g. `copydeck.test`) and respects `config/guzzle.php` settings.
 
 ---
 
@@ -312,6 +478,75 @@ entryTypes:
 | Lightswitch | `craft\fields\Lightswitch` | `true` / `false` |
 | Hyper | `verbb\hyper\fields\HyperField` | array of link objects (see Hyper section) |
 | ColourSwatches | colour swatches plugin | leave as default — importer doesn't set colours |
+
+---
+
+## Adding sidebar content to the entry edit screen
+
+**The correct mechanism is `Entry::EVENT_DEFINE_SIDEBAR_HTML`.**
+
+This is NOT the field layout designer / `BaseUiElement` approach. `BaseUiElement` + `EVENT_DEFINE_UI_ELEMENTS` only adds elements to the field layout designer palette for the main content area — it does not add sidebar content.
+
+`EVENT_DEFINE_SIDEBAR_HTML` is defined in `craft\base\Element` (line 402):
+```php
+public const EVENT_DEFINE_SIDEBAR_HTML = 'defineSidebarHtml';
+```
+
+It fires from `Element::getSidebarHtml()` which is called by `ElementsController` when rendering the entry edit screen. The event fires on the **element instance** being edited (not on a static class), so listen via `Event::on(Entry::class, ...)`.
+
+### Registration pattern
+
+```php
+use craft\elements\Entry;
+use craft\events\DefineHtmlEvent;
+use craft\base\Element;
+use yii\base\Event;
+
+Event::on(
+    Entry::class,
+    Element::EVENT_DEFINE_SIDEBAR_HTML,
+    static function (DefineHtmlEvent $event) {
+        /** @var Entry $entry */
+        $entry = $event->sender;
+        if ($entry === null || !$entry->id) {
+            return; // skip new unsaved entries
+        }
+        // APPEND to $event->html — never replace it
+        $event->html .= Craft::$app->view->renderTemplate(
+            'my-plugin/_sidebar/widget',
+            ['entry' => $entry],
+        );
+    },
+);
+```
+
+Register this in `Plugin::init()`. Confirmed working pattern — used by SEOmatic (`nystudio107/craft-seomatic/src/seoelements/SeoEntry.php`).
+
+### Sidebar HTML structure
+
+Craft's native sidebar sections use `<fieldset>` + `<legend class="h6">` wrapping a `<div class="meta">` with `.field` rows inside. This matches what `Element::statusFieldHtml()` produces:
+
+```html
+<fieldset>
+    <legend class="h6">COPYDECK</legend>
+    <div class="meta">
+        <div class="field">
+            <div class="heading"><label>Status</label></div>
+            <div class="input ltr"><button ...>Sync</button></div>
+        </div>
+        <div class="field">
+            <div class="heading"><label>Synced at</label></div>
+            <div class="input ltr"><span>Never</span></div>
+        </div>
+    </div>
+</fieldset>
+```
+
+SEOmatic uses this same pattern in its sidebar Twig templates (e.g. `_sidebars/_includes/sidebar-preview.twig`).
+
+### Inline JavaScript
+
+Render via a Twig template. The view's `renderTemplate()` call returns HTML that Craft injects into the DOM; any `<script>` tags in the output execute after injection. Embed the element ID in widget DOM IDs to avoid collisions when multiple entries are open.
 
 ---
 
