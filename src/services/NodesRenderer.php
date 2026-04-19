@@ -14,6 +14,7 @@ use yii\base\Component;
  *   - ordered_list        → <ol><li> (legacy alias)
  *   - unordered_list      → <ul><li> (legacy alias)
  *   - faq_items           → <details><summary>…</summary><p>…</p></details>
+ *   - table               → <table><thead>/<tbody> with <th>/<td> cells
  *   - ctaButton           → <p><a href="url">label</a></p>
  *
  * No external dependencies. This service is stateless — all methods are pure.
@@ -72,6 +73,7 @@ class NodesRenderer extends Component
             'ordered_list'   => $this->_renderList($node, 'ol'),
             'unordered_list' => $this->_renderList($node, 'ul'),
             'faq_items'      => $this->_renderFaqItems($node),
+            'table'          => $this->_renderTable($node),
             'ctaButton'      => $this->_renderCtaButton($node),
             default          => '',
         };
@@ -165,6 +167,58 @@ class NodesRenderer extends Component
     }
 
     /**
+     * Renders a table node as an HTML table.
+     *
+     * Rows with isHeader = true are rendered in <thead> using <th> cells.
+     * All other rows are rendered in <tbody> using <td> cells.
+     *
+     * @param array $node
+     * @return string
+     */
+    private function _renderTable(array $node): string
+    {
+        $rows = $node['tableRows'] ?? [];
+
+        if (empty($rows)) {
+            return '';
+        }
+
+        $headerRows = array_values(array_filter($rows, fn ($r) => !empty($r['isHeader'])));
+        $bodyRows   = array_values(array_filter($rows, fn ($r) => empty($r['isHeader'])));
+
+        $thead = '';
+        foreach ($headerRows as $row) {
+            $cells = '';
+            foreach ($row['cells'] ?? [] as $cell) {
+                $text   = htmlspecialchars($cell, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                $cells .= "<th>{$text}</th>";
+            }
+            $thead .= "<tr>{$cells}</tr>";
+        }
+
+        $tbody = '';
+        foreach ($bodyRows as $row) {
+            $cells = '';
+            foreach ($row['cells'] ?? [] as $cell) {
+                $text   = htmlspecialchars($cell, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                $cells .= "<td>{$text}</td>";
+            }
+            $tbody .= "<tr>{$cells}</tr>";
+        }
+
+        $html = '<table>';
+        if ($thead !== '') {
+            $html .= "<thead>{$thead}</thead>";
+        }
+        if ($tbody !== '') {
+            $html .= "<tbody>{$tbody}</tbody>";
+        }
+        $html .= '</table>';
+
+        return $html;
+    }
+
+    /**
      * Renders a ctaButton node as an anchor link.
      *
      * URL is always empty from Copydeck (set by editors in the CMS after import).
@@ -182,6 +236,6 @@ class NodesRenderer extends Component
             return '';
         }
 
-        return "<p><a href=\"{$url}\">{$label}</a></p>";
+        return "<p><a href=\"{$url}\" class=\"btn btn-primary\">{$label}</a></p>";
     }
 }

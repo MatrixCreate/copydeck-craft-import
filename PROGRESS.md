@@ -58,6 +58,16 @@
 
 - **CP nav icon** — Uses Craft's built-in `copyright` system icon.
 
+- **Sidebar block notes** — Collects `notes` from each block during import, formats as "Block Type\nnote text", stores in `copydeck_entry_syncs.notes` column. Displayed in the sidebar widget below "Synced at". Updates in place on sync. Migration `m250419_000000_add_notes_to_entry_syncs` adds the column.
+
+- **Sidebar reload link** — After a successful sync, a "Reload" link appears next to the timestamp so the editor can refresh to see updated content.
+
+- **ctaButton node type** — `NodesRenderer` renders `ctaButton` nodes as `<p><a href="url">label</a></p>`.
+
+- **buttonNodes handler** — Maps `postNodes` on price_list blocks to `actionButtons` Matrix via CTA button extraction.
+
+- **Hyper linkClass** — Action buttons in hero and CTA entries now include `linkClass: 'btn btn-primary'`.
+
 ### Craft Starter template changes
 
 - **Hero template rewrite** — `hero.twig` rewritten as single file (~100 lines) reading from `entry.hero` ContentBlock. Deleted `hero.slide.twig` and `hero.slide.image.twig`. Removed carousel CSS. Parent image inheritance and global fallback preserved.

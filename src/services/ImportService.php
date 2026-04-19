@@ -146,6 +146,18 @@ class ImportService extends Component
                 }
             }
 
+            // Collect block notes for the sidebar widget.
+            $noteLines = [];
+            foreach ($blocks as $block) {
+                $note = $block['notes'] ?? '';
+                if (is_string($note) && trim($note) !== '') {
+                    $blockType = $block['type'] ?? 'unknown';
+                    $blockLabel = ucwords(str_replace('_', ' ', $blockType));
+                    $noteLines[] = $blockLabel . "\n" . trim($note);
+                }
+            }
+            $result['blockNotes'] = implode("\n\n", $noteLines);
+
             $built = CopydeckImporter::$plugin->matrixBuilder->build($contentBlocks, $dryRun);
 
             $result['blocks']      = $built['blockReport'];
@@ -313,6 +325,7 @@ class ImportService extends Component
             'seoFieldCount' => 0,
             'blocks'        => [],
             'images'        => [],
+            'blockNotes'    => '',
             'warnings'      => [],
             'error'         => null,
         ];
@@ -569,6 +582,7 @@ class ImportService extends Component
                                 'handle'    => 'default-verbb-hyper-links-url',
                                 'linkValue' => $url,
                                 'linkText'  => $label,
+                                'linkClass' => 'btn btn-primary',
                             ],
                         ],
                     ],
@@ -814,6 +828,7 @@ class ImportService extends Component
                     'handle'    => 'default-verbb-hyper-links-url',
                     'linkValue' => (string)$url,
                     'linkText'  => $label,
+                    'linkClass' => 'btn btn-primary',
                 ],
             ];
 

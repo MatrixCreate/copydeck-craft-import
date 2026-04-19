@@ -32,6 +32,12 @@
  *   'buttonNodes'     → ContentNode[] → filters ctaButton nodes → actionButtons Matrix entries
  *   'faqNodes'        → ContentNode[] → splits at faq_items → richText/extraRichText/_faqItems
  *
+ * Developer notes:
+ *   'notes' is a block-level key (not inside 'fields') emitted by Copydeck when the CSM
+ *   adds a developer note to a block. It is read directly from $block['notes'] in
+ *   ImportService and written to the copydeckNotes field on the outer entry. It is NOT
+ *   present in outerFields here because MatrixBuilder reads from $block['fields'] only.
+ *
  * Blocks NOT in this mapping (handled or skipped elsewhere):
  *   hero          — imported separately into entry.hero Matrix field (not contentBlocks)
  *   call_to_action — handled separately; creates a callToActionEntry and relates it
@@ -131,7 +137,7 @@ return [
     'global' => [
         'outerType'   => 'copydeckGlobal',
         'outerFields' => [
-            'nodes' => ['copydeckNotes', 'nodes'],  // rendered as HTML into notes field
+            'nodes' => ['richText',      'nodes'],  // rendered as HTML into the content field
         ],
         'innerMatrix' => null,
     ],

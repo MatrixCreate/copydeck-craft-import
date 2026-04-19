@@ -185,12 +185,15 @@ class CopydeckImporter extends Plugin
                 $elementId = $entry->id;
                 $slug      = $entry->slug;
 
-                // Last successful sync timestamp for this entry.
-                $syncedAt = (new Query())
-                    ->select(['synced_at'])
+                // Last successful sync timestamp and notes for this entry.
+                $syncRow = (new Query())
+                    ->select(['synced_at', 'notes'])
                     ->from('{{%copydeck_entry_syncs}}')
                     ->where(['element_id' => $elementId])
-                    ->scalar();
+                    ->one();
+
+                $syncedAt = $syncRow['synced_at'] ?? null;
+                $notes    = $syncRow['notes'] ?? '';
 
                 if ($syncedAt) {
                     $syncedAtFormatted = Craft::$app->getFormatter()->asDatetime($syncedAt, 'short');
@@ -235,6 +238,16 @@ class CopydeckImporter extends Plugin
                 ]);
                 $html .= '</div></div>';
 
+                // Notes row.
+                $html .= '<div class="field">';
+                $html .= '<div class="heading" style="align-items:start;"><label>' . Html::encode(Craft::t('copydeck-importer', 'Notes')) . '</label></div>';
+                $html .= '<div class="input ltr">';
+                $html .= Html::tag('div', $notes !== '' ? nl2br(Html::encode($notes)) : Html::tag('span', Html::encode('None'), ['class' => 'light']), [
+                    'id'    => $widgetId . '-notes',
+                    'style' => 'font-size:12px; line-height:1.5;',
+                ]);
+                $html .= '</div></div>';
+
                 $html .= Html::endTag('div'); // .meta
                 $html .= '</fieldset>';
 
@@ -242,8 +255,9 @@ class CopydeckImporter extends Plugin
                 // timestamp on success without a page reload.
                 $js = <<<JS
 (function() {
-    var btn = document.getElementById('{$widgetId}-btn');
-    var ts  = document.getElementById('{$widgetId}-timestamp');
+    var btn   = document.getElementById('{$widgetId}-btn');
+    var ts    = document.getElementById('{$widgetId}-timestamp');
+    var notes = document.getElementById('{$widgetId}-notes');
     if (!btn) return;
 
     btn.addEventListener('click', function() {
@@ -268,6 +282,26 @@ class CopydeckImporter extends Plugin
                 btn.textContent = 'Synced \u2713';
                 if (ts && data.syncedAt) {
                     ts.textContent = data.syncedAt;
+                    // Add reload link next to timestamp.
+                    var reload = document.getElementById('{$widgetId}-reload');
+                    if (!reload) {
+                        reload = document.createElement('a');
+                        reload.id = '{$widgetId}-reload';
+                        reload.href = '#';
+                        reload.className = 'go';
+                        reload.style.cssText = 'margin-left:8px; font-size:12px;';
+                        reload.textContent = 'Reload';
+                        reload.addEventListener('click', function(e) {
+                            e.preventDefault();
+                            window.location.reload();
+                        });
+                        ts.parentNode.appendChild(reload);
+                    }
+                }
+                if (notes) {
+                    notes.innerHTML = data.notes
+                        ? data.notes.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\n/g,'<br>')
+                        : '<span class="light">None</span>';
                 }
                 setTimeout(function() {
                     btn.textContent = 'Sync';

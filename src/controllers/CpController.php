@@ -504,28 +504,31 @@ class CpController extends Controller
             ]);
         }
 
-        // Upsert the sync timestamp.
-        $now = Db::prepareDateForDb(new \DateTime());
-        $db  = Craft::$app->getDb();
+        // Upsert the sync timestamp and notes.
+        $now   = Db::prepareDateForDb(new \DateTime());
+        $notes = $result['blockNotes'] ?? '';
+        $db    = Craft::$app->getDb();
 
         $exists = (new Query())
             ->from('{{%copydeck_entry_syncs}}')
             ->where(['element_id' => $elementId])
             ->exists();
 
+        $syncData = ['synced_at' => $now, 'notes' => $notes];
+
         if ($exists) {
             $db->createCommand()
-                ->update('{{%copydeck_entry_syncs}}', ['synced_at' => $now], ['element_id' => $elementId])
+                ->update('{{%copydeck_entry_syncs}}', $syncData, ['element_id' => $elementId])
                 ->execute();
         } else {
             $db->createCommand()
-                ->insert('{{%copydeck_entry_syncs}}', ['element_id' => $elementId, 'synced_at' => $now])
+                ->insert('{{%copydeck_entry_syncs}}', array_merge(['element_id' => $elementId], $syncData))
                 ->execute();
         }
 
         $syncedAt = Craft::$app->getFormatter()->asDatetime($now, 'short');
 
-        return $this->asJson(['success' => true, 'syncedAt' => $syncedAt]);
+        return $this->asJson(['success' => true, 'syncedAt' => $syncedAt, 'notes' => $notes]);
     }
 
     // Private Methods
