@@ -200,6 +200,40 @@ class SyncJob extends BaseJob
             ],
             ['id' => $this->runId],
         )->execute();
+
+        // 6. Auto-lock all successfully synced entries.
+        // After every sync, imported entries are locked so subsequent syncs
+        // won't overwrite them unless the user explicitly unlocks them.
+        $db  = Craft::$app->getDb();
+        $now = (new \DateTime())->format('Y-m-d H:i:s');
+
+        foreach ($pageResults as $result) {
+            if (!($result['success'] ?? false) || !($result['entryId'] ?? null)) {
+                continue;
+            }
+
+            $entryId = $result['entryId'];
+
+            $exists = (new Query())
+                ->from('{{%copydeck_entry_syncs}}')
+                ->where(['element_id' => $entryId])
+                ->exists();
+
+            if ($exists) {
+                $db->createCommand()->update('{{%copydeck_entry_syncs}}', [
+                    'locked'    => true,
+                    'synced_at' => $now,
+                    'notes'     => $result['blockNotes'] ?? '',
+                ], ['element_id' => $entryId])->execute();
+            } else {
+                $db->createCommand()->insert('{{%copydeck_entry_syncs}}', [
+                    'element_id' => $entryId,
+                    'locked'     => true,
+                    'synced_at'  => $now,
+                    'notes'      => $result['blockNotes'] ?? '',
+                ])->execute();
+            }
+        }
     }
 
     /**

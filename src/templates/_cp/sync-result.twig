@@ -18,16 +18,29 @@
         {% set page = slugToPage[slug] ?? null %}
         {% if page %}
             {% set indent = depth * 24 %}
+            {% set isLocked = 'Skipped — entry is locked.' in (page.warnings ?? []) %}
             <tr>
                 <td style="padding-left:{{ 12 + indent }}px;">
                     {% if depth > 0 %}
                         <span style="color:var(--hairline-color); margin-right:4px;">{% for i in 1..depth %}&mdash;{% endfor %}</span>
                     {% endif %}
                     <strong>{{ page.title ?? page.slug ?? '?' }}</strong>
+                    {% set otherWarnings = (page.warnings ?? [])|filter(w => w != 'Skipped — entry is locked.') %}
+                    {% if isLocked %}
+                        <span class="light" style="margin-left:6px;">— Skipped (locked)</span>
+                    {% endif %}
+                    {% if page.error ?? null %}
+                        <span style="color:var(--error-color); margin-left:6px;">— {{ page.error }}</span>
+                    {% endif %}
+                    {% for warning in otherWarnings %}
+                        <span style="color:var(--warning-color); margin-left:6px;">— {{ warning }}</span>
+                    {% endfor %}
                 </td>
                 <td><code style="font-size:12px;">{{ page.slug ?? '?' }}</code></td>
                 <td>
-                    {% if page.success ?? false %}
+                    {% if 'Skipped — entry is locked.' in (page.warnings ?? []) %}
+                        <span class="status disabled"></span> Locked
+                    {% elseif page.success ?? false %}
                         {% if page.entryFound ?? false %}
                             <span class="status blue"></span> Updated
                         {% else %}
@@ -39,29 +52,21 @@
                 </td>
                 <td class="thin" style="white-space:nowrap;">
                     {% if page.entryId ?? null %}
-                        <a href="{{ cpUrl('entries/pages/' ~ page.entryId) }}" class="btn small" title="Edit in CP">
-                            {{ 'Edit'|t('copydeck-importer') }}
-                        </a>
-                        <a href="{{ siteUrl(page.slug ?? '') }}" class="btn small" target="_blank" title="View on site">
-                            {{ 'View'|t('copydeck-importer') }}
-                        </a>
+                        {% set pageEntry = craft.entries.id(page.entryId).status(null).one() %}
+                        {% if pageEntry %}
+                            <a href="{{ pageEntry.cpEditUrl }}" class="btn small" title="Edit in CP">
+                                {{ 'Edit'|t('copydeck-importer') }}
+                            </a>
+                            {% if pageEntry.url %}
+                                <a href="{{ pageEntry.url }}" class="btn small" target="_blank" title="View on site">
+                                    {{ 'View'|t('copydeck-importer') }}
+                                </a>
+                            {% endif %}
+                        {% endif %}
                     {% endif %}
                 </td>
             </tr>
 
-            {# Inline warnings #}
-            {% if (page.warnings ?? [])|length or page.error ?? null %}
-                <tr>
-                    <td colspan="4" style="padding-left:{{ 12 + indent + 16 }}px; border-top:none; padding-top:0;">
-                        {% if page.error ?? null %}
-                            <div class="error" style="font-size:13px;">{{ page.error }}</div>
-                        {% endif %}
-                        {% for warning in page.warnings ?? [] %}
-                            <div class="warning" style="font-size:13px;">{{ warning }}</div>
-                        {% endfor %}
-                    </td>
-                </tr>
-            {% endif %}
 
             {# Recurse into children #}
             {% set children = childrenOf[slug] ?? [] %}

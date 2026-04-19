@@ -324,9 +324,49 @@ class CpController extends Controller
             return $this->redirect('copydeck-importer');
         }
 
+        // Build tree data from existing sync records.
+        $syncRecords = (new Query())
+            ->select(['element_id', 'locked'])
+            ->from('{{%copydeck_entry_syncs}}')
+            ->all();
+
+        $hasSyncRecords = count($syncRecords) > 0;
+        $syncEntries    = [];
+
+        if ($hasSyncRecords) {
+            $elementIds = array_column($syncRecords, 'element_id');
+            $lockedMap  = array_column($syncRecords, 'locked', 'element_id');
+
+            $config        = Craft::$app->config->getConfigFromFile('copydeck');
+            $sectionHandle = $config['section'] ?? 'pages';
+
+            $entries = Entry::find()
+                ->section([$sectionHandle, 'homepage'])
+                ->id($elementIds)
+                ->status(null)
+                ->all();
+
+            foreach ($entries as $entry) {
+                $isHomepage = $entry->section->handle === 'homepage';
+                $parent     = $isHomepage ? null : $entry->getParent();
+
+                $syncEntries[] = [
+                    'elementId'  => $entry->id,
+                    'title'      => $entry->title,
+                    'slug'       => $entry->slug,
+                    'locked'     => (bool)($lockedMap[$entry->id] ?? true),
+                    'parentSlug' => $parent?->slug,
+                    'depth'      => $isHomepage ? 0 : ($entry->level - 1),
+                    'isHomepage' => $isHomepage,
+                ];
+            }
+        }
+
         return $this->renderTemplate('copydeck-importer/_cp/sync', [
-            'copydeckUrl' => $settings->copydeckUrl,
-            'projectSlug' => $settings->projectSlug,
+            'copydeckUrl'    => $settings->copydeckUrl,
+            'projectSlug'    => $settings->projectSlug,
+            'hasSyncRecords' => $hasSyncRecords,
+            'syncEntries'    => $syncEntries,
         ]);
     }
 
@@ -351,6 +391,28 @@ class CpController extends Controller
                 'success' => false,
                 'error'   => 'Copydeck API is not configured.',
             ]);
+        }
+
+        // Apply lock/unlock state from the pre-sync tree view.
+        // The browser sends the list of entry IDs the user has unlocked.
+        $request   = Craft::$app->getRequest();
+        $unlockIds = Json::decodeIfJson($request->getBodyParam('unlockIds', '[]'));
+
+        if (is_array($unlockIds) && !empty($unlockIds)) {
+            $db = Craft::$app->getDb();
+
+            // Lock everything first, then unlock only the selected entries.
+            $db->createCommand()
+                ->update('{{%copydeck_entry_syncs}}', ['locked' => true])
+                ->execute();
+
+            $db->createCommand()
+                ->update(
+                    '{{%copydeck_entry_syncs}}',
+                    ['locked' => false],
+                    ['element_id' => $unlockIds],
+                )
+                ->execute();
         }
 
         // Create a pending run record so the frontend has a run ID to poll.

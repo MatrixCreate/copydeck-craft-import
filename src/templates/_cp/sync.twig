@@ -6,56 +6,160 @@
     { label: 'Copydeck', url: url('copydeck-importer') },
 ] %}
 
+{# Recursive macro for rendering the entry tree with checkboxes #}
+{% macro pageRows(slugs, slugToPage, childrenOf, depth) %}
+    {% for slug in slugs %}
+        {% set page = slugToPage[slug] ?? null %}
+        {% if page %}
+            {% set indent = depth * 24 %}
+            <tr data-element-id="{{ page.elementId }}" data-depth="{{ depth }}">
+                <td style="padding-left:{{ 12 + indent }}px; white-space:nowrap;">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                        <input type="checkbox"
+                               class="copydeck-sync-cb"
+                               data-element-id="{{ page.elementId }}"
+                               {{ not page.locked ? 'checked' : '' }}>
+                        {% if depth > 0 %}
+                            <span style="color:var(--hairline-color); margin-right:4px;">{% for i in 1..depth %}&mdash;{% endfor %}</span>
+                        {% endif %}
+                        <strong>{{ page.title ?? page.slug }}</strong>
+                        {% if page.isHomepage ?? false %}
+                            <span class="light" style="font-size:12px;">(Homepage)</span>
+                        {% endif %}
+                    </label>
+                </td>
+                <td><code style="font-size:12px;">{{ page.slug ?? '?' }}</code></td>
+                <td class="copydeck-status-cell" style="white-space:nowrap;">
+                    {% if page.locked %}
+                        <span class="status disabled"></span> <span class="copydeck-status-text">Locked</span>
+                    {% else %}
+                        <span class="status green"></span> <span class="copydeck-status-text">Will sync</span>
+                    {% endif %}
+                </td>
+            </tr>
+
+            {# Recurse into children #}
+            {% set children = childrenOf[slug] ?? [] %}
+            {% if children|length %}
+                {{ _self.pageRows(children, slugToPage, childrenOf, depth + 1) }}
+            {% endif %}
+        {% endif %}
+    {% endfor %}
+{% endmacro %}
+
 {% block content %}
 
-    <div style="max-width:600px;">
+    <div style="max-width:900px;">
 
-        <div class="pane" style="padding:24px; border-radius:8px;">
+        {# Sync controls + API info #}
+        <div class="pane" style="padding:24px; border-radius:8px; margin-bottom:24px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
 
-            <div style="margin-bottom:20px;">
-                <div class="light" style="margin-bottom:4px; font-size:13px;">Copydeck Instance</div>
-                <div><strong>{{ copydeckUrl }}</strong></div>
-            </div>
-
-            <div style="margin-bottom:20px;">
-                <div class="light" style="margin-bottom:4px; font-size:13px;">Project</div>
-                <div><strong>{{ projectSlug }}</strong></div>
-            </div>
-
-            {# Sync button — triggers queue job #}
-            <div id="sync-idle">
-                <form method="post" id="sync-form">
-                    {{ csrfInput() }}
-                    {{ actionInput('copydeck-importer/cp/run-sync') }}
-                    <button type="submit" class="btn submit">
-                        {{ 'Sync'|t('copydeck-importer') }}
-                    </button>
-                </form>
-            </div>
-
-            {# Loading state — shown while job is running #}
-            <div id="sync-loading" style="display:none;">
-                <div style="display:flex; align-items:center; gap:12px; padding:16px 0;">
-                    <div class="spinner" style="display:block;"></div>
+                {# API info (right) #}
+                <div style="display:flex; gap:48px;">
                     <div>
-                        <strong>{{ 'Syncing content and downloading assets'|t('copydeck-importer') }}</strong>
-                        <div class="light" style="font-size:13px; margin-top:2px;">{{ 'This may take a moment for large imports.'|t('copydeck-importer') }}</div>
+                        <div class="light" style="margin-bottom:4px; font-size:13px;">Copydeck Instance</div>
+                        <div><strong>{{ copydeckUrl }}</strong></div>
+                    </div>
+                    <div>
+                        <div class="light" style="margin-bottom:4px; font-size:13px;">Project</div>
+                        <div><strong>{{ projectSlug }}</strong></div>
+                    </div>
+                </div>
+
+                {# Sync button + hint (left) #}
+                <div id="sync-idle" style="display:flex; align-items:center; gap:12px;">
+                    <form method="post" id="sync-form" style="display:flex; align-items:center; gap:12px;">
+                        {% if hasSyncRecords %}
+                            <span class="light" style="font-size:13px;" id="copydeck-sync-btn-hint"></span>
+                        {% endif %}
+                        {{ csrfInput() }}
+                        {{ actionInput('copydeck-importer/cp/run-sync') }}
+                        <button type="submit" class="btn submit">
+                            {{ 'Sync'|t('copydeck-importer') }}
+                        </button>
+                    </form>
+                </div>
+
+                {# Loading state — shown while job is running #}
+                <div id="sync-loading" style="display:none;">
+                    <div style="display:flex; align-items:center; gap:12px;">
+                        <div class="spinner" style="display:block;"></div>
+                        <div>
+                            <strong>{{ 'Syncing content and downloading assets'|t('copydeck-importer') }}</strong>
+                            <div class="light" style="font-size:13px; margin-top:2px;">{{ 'This may take a moment for large imports.'|t('copydeck-importer') }}</div>
+                        </div>
+                    </div>
+                </div>
+
+                {# Error state #}
+                <div id="sync-error" style="display:none;">
+                    <div style="display:flex; align-items:center; gap:12px;">
+                        <div class="error">
+                            <strong>{{ 'Sync failed'|t('copydeck-importer') }}</strong>
+                            <span id="sync-error-message"></span>
+                        </div>
+                        <button type="button" class="btn small" onclick="resetSync()">{{ 'Try Again'|t('copydeck-importer') }}</button>
                     </div>
                 </div>
             </div>
+        </div>
 
-            {# Error state #}
-            <div id="sync-error" style="display:none;">
-                <div class="error" style="margin-top:12px;">
-                    <strong>{{ 'Sync failed'|t('copydeck-importer') }}</strong>
-                    <div id="sync-error-message"></div>
+        {% if hasSyncRecords %}
+
+            {# Entry tree pane with selection controls #}
+            <div class="pane" style="border-radius:8px; margin-bottom:24px;">
+
+                {# Header bar #}
+                <div style="padding:12px 16px; border-bottom:1px solid var(--hairline-color); display:flex; justify-content:space-between; align-items:center;">
+                    <div>
+                        <strong>{{ 'Entries'|t('copydeck-importer') }}</strong>
+                        <span class="light" style="margin-left:8px; font-size:13px;" id="copydeck-sync-summary"></span>
+                    </div>
+                    <div style="display:flex; gap:8px;">
+                        <button type="button" class="btn small" id="copydeck-select-all">{{ 'Select All'|t('copydeck-importer') }}</button>
+                        <button type="button" class="btn small" id="copydeck-select-none">{{ 'Select None'|t('copydeck-importer') }}</button>
+                    </div>
                 </div>
-                <div style="margin-top:12px;">
-                    <button type="button" class="btn" onclick="resetSync()">{{ 'Try Again'|t('copydeck-importer') }}</button>
+
+                {# Hint #}
+                <div style="padding:10px 16px; background:var(--gray-050); border-bottom:1px solid var(--hairline-color); font-size:13px; color:var(--medium-text-color);">
+                    Select the entries you want to update. Unselected entries will not be changed.
                 </div>
+
+                {# Build tree lookup maps #}
+                {% set slugToPage = {} %}
+                {% set childrenOf = {} %}
+                {% set rootSlugs = [] %}
+
+                {% for entry in syncEntries %}
+                    {% set slug = entry.slug ?? '' %}
+                    {% set parentSlug = entry.parentSlug ?? null %}
+                    {% set slugToPage = slugToPage|merge({ (slug): entry }) %}
+
+                    {% if parentSlug and parentSlug != '' %}
+                        {% set existing = childrenOf[parentSlug] ?? [] %}
+                        {% set childrenOf = childrenOf|merge({ (parentSlug): existing|merge([slug]) }) %}
+                    {% else %}
+                        {% set rootSlugs = rootSlugs|merge([slug]) %}
+                    {% endif %}
+                {% endfor %}
+
+                <table class="data fullwidth">
+                    <thead>
+                        <tr>
+                            <th>{{ 'Page'|t('copydeck-importer') }}</th>
+                            <th>{{ 'Slug'|t('copydeck-importer') }}</th>
+                            <th>{{ 'Status'|t('copydeck-importer') }}</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{ _self.pageRows(rootSlugs, slugToPage, childrenOf, 0) }}
+                    </tbody>
+                </table>
             </div>
 
-        </div>
+        {% endif %}
 
     </div>
 
@@ -69,6 +173,82 @@
         var runId = null;
         var pollTimer = null;
 
+        // ----- Tree checkbox logic -----
+        // Checked = will sync, unchecked = locked (won't sync).
+        var checkboxes = Array.from(document.querySelectorAll('.copydeck-sync-cb'));
+        var lastCheckedIndex = null;
+        var summaryEl = document.getElementById('copydeck-sync-summary');
+        var btnHintEl = document.getElementById('copydeck-sync-btn-hint');
+
+        function updateStatusCell(cb) {
+            var row = cb.closest('tr');
+            var cell = row.querySelector('.copydeck-status-cell');
+            if (!cell) return;
+
+            if (cb.checked) {
+                cell.innerHTML = '<span class="status green"></span> <span class="copydeck-status-text">Will sync</span>';
+            } else {
+                cell.innerHTML = '<span class="status disabled"></span> <span class="copydeck-status-text">Locked</span>';
+            }
+        }
+
+        function updateSummary() {
+            if (!checkboxes.length) return;
+
+            var selected = checkboxes.filter(function(cb) { return cb.checked; }).length;
+            var total = checkboxes.length;
+
+            if (summaryEl) {
+                summaryEl.textContent = selected + ' of ' + total + ' selected';
+            }
+            if (btnHintEl) {
+                if (selected === 0) {
+                    btnHintEl.textContent = 'No entries selected — nothing will be synced.';
+                } else {
+                    btnHintEl.textContent = selected + ' ' + (selected === 1 ? 'entry' : 'entries') + ' will be updated.';
+                }
+            }
+        }
+
+        // Shift-click range selection.
+        checkboxes.forEach(function(cb, index) {
+            cb.addEventListener('click', function(e) {
+                if (e.shiftKey && lastCheckedIndex !== null) {
+                    var start = Math.min(lastCheckedIndex, index);
+                    var end = Math.max(lastCheckedIndex, index);
+                    var state = cb.checked;
+                    for (var i = start; i <= end; i++) {
+                        checkboxes[i].checked = state;
+                        updateStatusCell(checkboxes[i]);
+                    }
+                }
+                lastCheckedIndex = index;
+                updateStatusCell(cb);
+                updateSummary();
+            });
+        });
+
+        // Select All / Select None buttons.
+        var selectAllBtn = document.getElementById('copydeck-select-all');
+        var selectNoneBtn = document.getElementById('copydeck-select-none');
+
+        if (selectAllBtn) {
+            selectAllBtn.addEventListener('click', function() {
+                checkboxes.forEach(function(cb) { cb.checked = true; updateStatusCell(cb); });
+                updateSummary();
+            });
+        }
+        if (selectNoneBtn) {
+            selectNoneBtn.addEventListener('click', function() {
+                checkboxes.forEach(function(cb) { cb.checked = false; updateStatusCell(cb); });
+                updateSummary();
+            });
+        }
+
+        // Initial summary.
+        updateSummary();
+
+        // ----- Sync form submission -----
         form.addEventListener('submit', function(e) {
             e.preventDefault();
             idleEl.style.display = 'none';
@@ -76,6 +256,17 @@
             errorEl.style.display = 'none';
 
             var formData = new FormData(form);
+
+            // Collect selected entry IDs (checked = will sync = unlock).
+            if (checkboxes.length) {
+                var unlockIds = [];
+                checkboxes.forEach(function(cb) {
+                    if (cb.checked) {
+                        unlockIds.push(parseInt(cb.dataset.elementId, 10));
+                    }
+                });
+                formData.append('unlockIds', JSON.stringify(unlockIds));
+            }
 
             fetch(Craft.getActionUrl('copydeck-importer/cp/run-sync'), {
                 method: 'POST',
