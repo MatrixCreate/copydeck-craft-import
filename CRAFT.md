@@ -184,7 +184,7 @@ Critical requirements:
 | `list` | `<ul>` or `<ol>` (based on `ordered` flag) |
 | `ordered_list` | `<ol>` (legacy alias) |
 | `unordered_list` | `<ul>` (legacy alias) |
-| `faq_items` | nested `<ul><li>question<ul><li>answer</li></ul></li></ul>` |
+| `faq_items` | `<details><summary>question</summary><p>answer</p></details>` |
 
 ---
 

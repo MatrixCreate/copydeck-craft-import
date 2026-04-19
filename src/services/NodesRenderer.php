@@ -130,10 +130,10 @@ class NodesRenderer extends Component
     }
 
     /**
-     * Renders a faq_items node as a nested list.
+     * Renders a faq_items node as details/summary accordion elements.
      *
-     * Each FAQ item becomes a <li> with the question, containing a nested
-     * <ul><li> with the answer.
+     * Each FAQ item becomes a <details><summary>question</summary><p>answer</p></details>.
+     * CKEditor's Rich Text field supports details/summary natively.
      *
      * @param array $node
      * @return string
@@ -146,18 +146,16 @@ class NodesRenderer extends Component
             return '';
         }
 
-        $html = '<ul>';
+        $html = '';
 
         foreach ($items as $item) {
             $question = htmlspecialchars($item['question'] ?? '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
             $answer   = htmlspecialchars($item['answer'] ?? '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
             if ($question !== '' || $answer !== '') {
-                $html .= "<li>{$question}<ul><li>{$answer}</li></ul></li>";
+                $html .= "<details><summary>{$question}</summary><p>{$answer}</p></details>";
             }
         }
-
-        $html .= '</ul>';
 
         return $html;
     }

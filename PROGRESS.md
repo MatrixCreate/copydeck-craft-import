@@ -42,7 +42,7 @@
 
 - **Action button support** — `hyperButton` handler in MatrixBuilder converts `{label, url}` to Hyper field data. Sets `showLinkAsSeparateButton` when button present.
 
-- **NodesRenderer upgrades** — Added `list` node type (with `ordered` boolean), `faq_items` node type (nested Q&A list). Supports `heading`, `paragraph`, `list`, `ordered_list`, `unordered_list`, `faq_items`.
+- **NodesRenderer upgrades** — Added `list` node type (with `ordered` boolean), `faq_items` node type (renders as `<details><summary>` accordions). Supports `heading`, `paragraph`, `list`, `ordered_list`, `unordered_list`, `faq_items`.
 
 - **Asset filename sanitization** — `Assets::prepareAssetName()` applied before idempotency lookup. Prevents mismatch when Craft sanitizes filenames on save (spaces → hyphens).
 
