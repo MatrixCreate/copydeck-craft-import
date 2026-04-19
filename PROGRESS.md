@@ -64,6 +64,8 @@
 
 - **New content block templates** — `copydeckCards.twig`, `copydeckUsp.twig`, `copydeckGlobal.twig`, `priceList.twig`.
 
+- **CKEditor Details/Summary plugin** — Custom CKEditor 5 plugin (`modules/ckeditor-details/`) via `BaseCkeditorPackageAsset`. Single context-aware toolbar button: inserts a fresh `<details>/<summary>` block, or converts selected list items into details blocks. Registered as a Craft module. Built with Vite as ES module. Includes Enter-to-escape keyboard handling (Enter in summary jumps to content, Enter on empty last paragraph escapes the block). Uses Craft's `list-timeline` icon scaled to CKEditor's 20x20 viewBox.
+
 ### New files (plugin)
 
 ```
