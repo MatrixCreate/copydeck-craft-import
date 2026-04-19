@@ -559,6 +559,14 @@ class ImportService extends Component
                 : [];
         }
 
+        // mobileImage — optional mobile-specific hero image.
+        if (isset($fields['mobile_image']) && is_array($fields['mobile_image']) && !empty($fields['mobile_image']['url'])) {
+            $imageResult = CopydeckImporter::$plugin->images->importFromField($fields['mobile_image'], $dryRun);
+            $innerFields['mobileImage'] = ($imageResult !== null && $imageResult['id'] !== null)
+                ? [$imageResult['id']]
+                : [];
+        }
+
         // actionButtons — Matrix of actionButton entries with Hyper fields.
         $buttons = $fields['buttons'] ?? [];
         if (!empty($buttons) && is_array($buttons)) {
