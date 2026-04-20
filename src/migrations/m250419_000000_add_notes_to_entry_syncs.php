@@ -17,6 +17,28 @@ class m250419_000000_add_notes_to_entry_syncs extends Migration
 {
     public function safeUp(): bool
     {
+        // If the table doesn't exist (e.g. Install ran before it was added),
+        // create it with all columns known up to this migration.
+        if (!$this->db->tableExists('{{%copydeck_entry_syncs}}')) {
+            $this->createTable('{{%copydeck_entry_syncs}}', [
+                'element_id' => $this->integer()->notNull(),
+                'synced_at'  => $this->dateTime()->notNull(),
+                'notes'      => $this->text(),
+                'PRIMARY KEY([[element_id]])',
+            ]);
+
+            $this->addForeignKey(
+                null,
+                '{{%copydeck_entry_syncs}}',
+                'element_id',
+                '{{%elements}}',
+                'id',
+                'CASCADE',
+            );
+
+            return true;
+        }
+
         if ($this->db->columnExists('{{%copydeck_entry_syncs}}', 'notes')) {
             return true;
         }
