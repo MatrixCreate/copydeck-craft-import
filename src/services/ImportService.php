@@ -84,7 +84,8 @@ class ImportService extends Component
 
             $slug  = $data['document']['slug'];
             $title = $data['document']['title'] ?? $slug;
-            $result['slug'] = $slug;
+            $result['slug']  = $slug;
+            $result['title'] = $title;
 
             $isHomepage = (bool)($data['document']['is_homepage'] ?? false);
 

@@ -32,6 +32,20 @@
         </div>
     </div>
 
+    {# Block type labels — human-readable names for Copydeck machine types #}
+    {% set blockLabels = {
+        'text': 'Text',
+        'text_and_media': 'Text & Media',
+        'faq': 'FAQ',
+        'cards': 'Cards',
+        'price_list': 'Price List',
+        'usp': 'USP',
+        'global': 'Global',
+        'hero': 'Hero',
+        'call_to_action': 'Call to Action',
+        'table': 'Table',
+    } %}
+
     {# Pages table #}
     <table class="data fullwidth">
         <thead>
@@ -48,20 +62,20 @@
             {% for page in pages %}
                 <tr>
                     <td>
-                        <strong>{{ page.slug }}</strong>
+                        <strong>{{ page.title ?? page.slug }}</strong>
                     </td>
                     <td><code>{{ page.slug }}</code></td>
                     <td>
                         {% set blockTypes = [] %}
                         {% for block in page.blocks %}
                             {% if not block.skipped %}
-                                {% set blockTypes = blockTypes|merge([block.type]) %}
+                                {% set blockTypes = blockTypes|merge([blockLabels[block.type] ?? block.type]) %}
                             {% endif %}
                         {% endfor %}
                         {{ blockTypes|join(', ') }}
                     </td>
                     <td>{{ page.images|length }}</td>
-                    <td>
+                    <td style="white-space:nowrap;">
                         {% if page.willCreate %}
                             <span class="status green"></span> Create
                         {% else %}
