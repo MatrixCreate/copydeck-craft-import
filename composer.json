@@ -1,10 +1,10 @@
 {
-  "name": "matrixcreate/craft-copydeck-importer",
+  "name": "matrixcreate/copydeck-craft-import",
   "description": "Import Copydeck content exports into Craft CMS 5 entries.",
   "type": "craft-plugin",
   "license": "MIT",
   "keywords": ["craft", "cms", "plugin", "import", "copydeck", "content"],
-  "homepage": "https://github.com/matrixcreate/craft-copydeck-importer",
+  "homepage": "https://github.com/MatrixCreate/copydeck-craft-import",
   "authors": [
     {
       "name": "Matrix Create",
@@ -12,8 +12,8 @@
     }
   ],
   "support": {
-    "issues": "https://github.com/matrixcreate/craft-copydeck-importer/issues",
-    "source": "https://github.com/matrixcreate/craft-copydeck-importer"
+    "issues": "https://github.com/MatrixCreate/copydeck-craft-import/issues",
+    "source": "https://github.com/MatrixCreate/copydeck-craft-import"
   },
   "require": {
     "php": ">=8.2",
