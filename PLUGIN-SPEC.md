@@ -57,7 +57,7 @@ src/
     sync.twig                    # Sync screen with queue polling
     sync-result.twig             # Hierarchical sync report
 composer.json
-CRAFT.md                        # Settled API patterns — read every session
+CLAUDE.md                       # Settled API patterns — loaded automatically by Claude
 ```
 
 ## Config
