@@ -14,9 +14,9 @@ use yii\console\ExitCode;
  * Copydeck import console controller.
  *
  * Usage:
- *   php craft copydeck/import --file=export.json
- *   php craft copydeck/import --file=export.json --dry-run
- *   php craft copydeck/import --file=export.json --verbose
+ *   php craft copydeck-importer/import --file=export.json
+ *   php craft copydeck-importer/import --file=export.json --dry-run
+ *   php craft copydeck-importer/import --file=export.json --verbose
  *
  * @author Matrix Create <hello@matrixcreate.com>
  * @since 1.0.0
