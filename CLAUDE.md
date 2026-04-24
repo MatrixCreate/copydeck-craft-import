@@ -18,10 +18,14 @@ composer config repositories.copydeck '{"type":"path","url":"../copydeck-craft-i
 git checkout composer.json composer.lock && composer install
 ```
 
-Optional shell aliases for `~/.zshrc`:
+Optional shell functions for `~/.zshrc` (aliases break on the nested quoting):
 ```bash
-alias cdp-local='composer config repositories.copydeck "{\"type\":\"path\",\"url\":\"../copydeck-craft-import\",\"options\":{\"symlink\":true}}" && composer require matrixcreate/copydeck-craft-import:@dev'
-alias cdp-packagist='git checkout composer.json composer.lock && composer install'
+cdp-local() {
+  composer config repositories.copydeck '{"type":"path","url":"../copydeck-craft-import","options":{"symlink":true}}' && composer require matrixcreate/copydeck-craft-import:@dev
+}
+cdp-packagist() {
+  git checkout composer.json composer.lock && composer install
+}
 ```
 
 The path repo with `symlink: true` means edits in this plugin directory are instantly live in the Craft project.
@@ -290,7 +294,15 @@ protected function settingsHtml(): ?string
 $settings = CopydeckImporter::$plugin->getSettings();
 ```
 
-Template uses `{% import '_includes/forms' as forms %}` with standard Craft form macros. The `settings` namespace is handled automatically by Craft's settings response.
+Template uses `autosuggestField` with `suggestEnvVars: true` so editors can reference environment variables (e.g. `$COPYDECK_API_KEY`). Project config stores the env var reference, not the secret. At runtime, always resolve with `App::parseEnv()` before using the value:
+
+```php
+use craft\helpers\App;
+$url = App::parseEnv($settings->copydeckUrl);
+$key = App::parseEnv($settings->apiKey);
+```
+
+The `settings` namespace is handled automatically by Craft's settings response.
 
 ### API key format and project inference
 

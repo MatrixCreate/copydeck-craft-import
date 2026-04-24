@@ -5,6 +5,7 @@ namespace matrixcreate\copydeckimporter\controllers;
 use Craft;
 use craft\db\Query;
 use craft\elements\Entry;
+use craft\helpers\App;
 use craft\helpers\Db;
 use craft\helpers\Json;
 use craft\web\Controller;
@@ -363,7 +364,7 @@ class CpController extends Controller
 
         // Parse the project slug from the API key (cpd_{slug}_{32chars}) for display.
         $inferredSlug = '';
-        $apiKey = $settings->apiKey;
+        $apiKey = App::parseEnv($settings->apiKey);
 
         if (str_starts_with($apiKey, 'cpd_')) {
             $withoutPrefix = substr($apiKey, 4);
@@ -375,7 +376,7 @@ class CpController extends Controller
         }
 
         return $this->renderTemplate('copydeck-importer/_cp/sync', [
-            'copydeckUrl'    => $settings->copydeckUrl,
+            'copydeckUrl'    => App::parseEnv($settings->copydeckUrl),
             'projectSlug'    => $inferredSlug,
             'hasSyncRecords' => $hasSyncRecords,
             'syncEntries'    => $syncEntries,
@@ -540,14 +541,14 @@ class CpController extends Controller
         $slugMap      = $config['slugMap'] ?? [];
         $copydeckSlug = $slugMap[$slug] ?? $slug;
 
-        $url      = rtrim($settings->copydeckUrl, '/');
+        $url      = rtrim(App::parseEnv($settings->copydeckUrl), '/');
         $endpoint = "{$url}/api/v1/pages/{$copydeckSlug}/export";
 
         try {
             $response = Craft::createGuzzleClient()->request('GET', $endpoint, [
                 RequestOptions::HEADERS => [
                     'Accept'        => 'application/json',
-                    'Authorization' => "Bearer {$settings->apiKey}",
+                    'Authorization' => 'Bearer ' . App::parseEnv($settings->apiKey),
                 ],
                 RequestOptions::TIMEOUT         => 30,
                 RequestOptions::CONNECT_TIMEOUT => 10,

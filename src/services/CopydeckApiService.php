@@ -3,6 +3,7 @@
 namespace matrixcreate\copydeckimporter\services;
 
 use Craft;
+use craft\helpers\App;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\RequestOptions;
 use matrixcreate\copydeckimporter\CopydeckImporter;
@@ -28,8 +29,8 @@ class CopydeckApiService extends Component
     {
         $settings = CopydeckImporter::$plugin->getSettings();
 
-        $url = rtrim($settings->copydeckUrl, '/');
-        $key = $settings->apiKey;
+        $url = rtrim(App::parseEnv($settings->copydeckUrl), '/');
+        $key = App::parseEnv($settings->apiKey);
 
         if ($url === '' || $key === '') {
             return [

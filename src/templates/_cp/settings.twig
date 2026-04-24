@@ -1,21 +1,24 @@
 {% import '_includes/forms' as forms %}
 
-{{ forms.textField({
+{{ forms.autosuggestField({
     label: 'Copydeck URL'|t('copydeck-importer'),
-    instructions: 'The base URL of your Copydeck instance (e.g. https://copydeck.agency.com).'|t('copydeck-importer'),
+    instructions: 'The base URL of your Copydeck instance (e.g. https://copydeck.agency.com). Supports environment variables.'|t('copydeck-importer'),
     id: 'copydeckUrl',
     name: 'copydeckUrl',
     value: settings.copydeckUrl,
     placeholder: 'https://copydeck.agency.com',
+    suggestEnvVars: true,
+    suggestAliases: true,
     errors: settings.getErrors('copydeckUrl'),
 }) }}
 
-{{ forms.passwordField({
+{{ forms.autosuggestField({
     label: 'API Key'|t('copydeck-importer'),
-    instructions: 'The project API key from Copydeck project settings.'|t('copydeck-importer'),
+    instructions: 'The project API key from Copydeck project settings. Use an environment variable (e.g. $COPYDECK_API_KEY) to keep secrets out of project config.'|t('copydeck-importer'),
     id: 'apiKey',
     name: 'apiKey',
     value: settings.apiKey,
-    placeholder: 'Enter your API key',
+    placeholder: '$COPYDECK_API_KEY',
+    suggestEnvVars: true,
     errors: settings.getErrors('apiKey'),
 }) }}
