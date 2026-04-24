@@ -10,16 +10,6 @@
     errors: settings.getErrors('copydeckUrl'),
 }) }}
 
-{{ forms.textField({
-    label: 'Project Slug'|t('copydeck-importer'),
-    instructions: 'The Copydeck project slug used in the API endpoint.'|t('copydeck-importer'),
-    id: 'projectSlug',
-    name: 'projectSlug',
-    value: settings.projectSlug,
-    placeholder: 'my-project',
-    errors: settings.getErrors('projectSlug'),
-}) }}
-
 {{ forms.passwordField({
     label: 'API Key'|t('copydeck-importer'),
     instructions: 'The project API key from Copydeck project settings.'|t('copydeck-importer'),

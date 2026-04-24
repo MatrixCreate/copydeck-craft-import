@@ -28,19 +28,18 @@ class CopydeckApiService extends Component
     {
         $settings = CopydeckImporter::$plugin->getSettings();
 
-        $url  = rtrim($settings->copydeckUrl, '/');
-        $slug = $settings->projectSlug;
-        $key  = $settings->apiKey;
+        $url = rtrim($settings->copydeckUrl, '/');
+        $key = $settings->apiKey;
 
-        if ($url === '' || $slug === '' || $key === '') {
+        if ($url === '' || $key === '') {
             return [
                 'success' => false,
                 'data'    => null,
-                'error'   => 'Copydeck API is not fully configured. Set URL, project slug, and API key in plugin settings.',
+                'error'   => 'Copydeck API is not fully configured. Set URL and API key in plugin settings.',
             ];
         }
 
-        $endpoint = "{$url}/api/v1/projects/{$slug}/export";
+        $endpoint = "{$url}/api/v1/export";
 
         try {
             $response = Craft::createGuzzleClient()->request('GET', $endpoint, [

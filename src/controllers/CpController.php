@@ -37,8 +37,7 @@ class CpController extends Controller
     {
         $settings = CopydeckImporter::$plugin->getSettings();
         $apiConfigured = $settings->copydeckUrl !== ''
-            && $settings->apiKey !== ''
-            && $settings->projectSlug !== '';
+            && $settings->apiKey !== '';
 
         return $this->renderTemplate('copydeck-importer/_cp/index', [
             'apiConfigured' => $apiConfigured,
@@ -318,8 +317,8 @@ class CpController extends Controller
     {
         $settings = CopydeckImporter::$plugin->getSettings();
 
-        if ($settings->copydeckUrl === '' || $settings->apiKey === '' || $settings->projectSlug === '') {
-            Craft::$app->getSession()->setError('Copydeck API is not configured. Set URL, project slug, and API key in plugin settings.');
+        if ($settings->copydeckUrl === '' || $settings->apiKey === '') {
+            Craft::$app->getSession()->setError('Copydeck API is not configured. Set URL and API key in plugin settings.');
 
             return $this->redirect('copydeck-importer');
         }
@@ -362,9 +361,22 @@ class CpController extends Controller
             }
         }
 
+        // Parse the project slug from the API key (cpd_{slug}_{32chars}) for display.
+        $inferredSlug = '';
+        $apiKey = $settings->apiKey;
+
+        if (str_starts_with($apiKey, 'cpd_')) {
+            $withoutPrefix = substr($apiKey, 4);
+            $lastUnderscore = strrpos($withoutPrefix, '_');
+
+            if ($lastUnderscore !== false) {
+                $inferredSlug = substr($withoutPrefix, 0, $lastUnderscore);
+            }
+        }
+
         return $this->renderTemplate('copydeck-importer/_cp/sync', [
             'copydeckUrl'    => $settings->copydeckUrl,
-            'projectSlug'    => $settings->projectSlug,
+            'projectSlug'    => $inferredSlug,
             'hasSyncRecords' => $hasSyncRecords,
             'syncEntries'    => $syncEntries,
         ]);
@@ -386,7 +398,7 @@ class CpController extends Controller
 
         $settings = CopydeckImporter::$plugin->getSettings();
 
-        if ($settings->copydeckUrl === '' || $settings->apiKey === '' || $settings->projectSlug === '') {
+        if ($settings->copydeckUrl === '' || $settings->apiKey === '') {
             return $this->asJson([
                 'success' => false,
                 'error'   => 'Copydeck API is not configured.',
@@ -516,10 +528,10 @@ class CpController extends Controller
 
         $settings = CopydeckImporter::$plugin->getSettings();
 
-        if ($settings->copydeckUrl === '' || $settings->apiKey === '' || $settings->projectSlug === '') {
+        if ($settings->copydeckUrl === '' || $settings->apiKey === '') {
             return $this->asJson([
                 'success' => false,
-                'error'   => 'Copydeck API is not configured. Set URL, project slug, and API key in plugin settings.',
+                'error'   => 'Copydeck API is not configured. Set URL and API key in plugin settings.',
             ]);
         }
 
@@ -529,7 +541,7 @@ class CpController extends Controller
         $copydeckSlug = $slugMap[$slug] ?? $slug;
 
         $url      = rtrim($settings->copydeckUrl, '/');
-        $endpoint = "{$url}/api/v1/projects/{$settings->projectSlug}/pages/{$copydeckSlug}/export";
+        $endpoint = "{$url}/api/v1/pages/{$copydeckSlug}/export";
 
         try {
             $response = Craft::createGuzzleClient()->request('GET', $endpoint, [

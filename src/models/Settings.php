@@ -30,19 +30,12 @@ class Settings extends Model
     public string $apiKey = '';
 
     /**
-     * Copydeck project slug (used in the API endpoint path).
-     *
-     * @var string
-     */
-    public string $projectSlug = '';
-
-    /**
      * @inheritdoc
      */
     public function defineRules(): array
     {
         return [
-            [['copydeckUrl', 'apiKey', 'projectSlug'], 'string'],
+            [['copydeckUrl', 'apiKey'], 'string'],
             ['copydeckUrl', 'url', 'defaultScheme' => 'https', 'when' => fn() => $this->copydeckUrl !== ''],
         ];
     }

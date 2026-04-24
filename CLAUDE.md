@@ -235,7 +235,7 @@ Supports single-page (top-level `blocks`) and batch (top-level `pages`) JSON for
 
 ### Per-entry widget sync
 
-The sidebar widget calls `GET /api/v1/projects/{projectSlug}/pages/{slug}/export` for single-page sync. Slug is mapped via `config/copydeck.php` `slugMap` when Craft and Copydeck slugs differ.
+The sidebar widget calls `GET /api/v1/pages/{slug}/export` for single-page sync (the project is inferred from the API key). Slug is mapped via `config/copydeck.php` `slugMap` when Craft and Copydeck slugs differ.
 
 ### Locked entries
 
@@ -257,7 +257,6 @@ class Settings extends \craft\base\Model
 {
     public string $copydeckUrl = '';
     public string $apiKey = '';
-    public string $projectSlug = '';
 }
 
 // Plugin class:
@@ -281,6 +280,19 @@ $settings = CopydeckImporter::$plugin->getSettings();
 ```
 
 Template uses `{% import '_includes/forms' as forms %}` with standard Craft form macros. The `settings` namespace is handled automatically by Craft's settings response.
+
+### API key format and project inference
+
+The API key embeds the project slug: `cpd_{project-slug}_{32chars}`. The plugin no longer stores `projectSlug` as a separate setting — it's inferred from the key at runtime:
+
+```php
+// Strip "cpd_" prefix, find last underscore, everything before it is the slug
+$withoutPrefix = substr($apiKey, 4);
+$lastUnderscore = strrpos($withoutPrefix, '_');
+$slug = substr($withoutPrefix, 0, $lastUnderscore);
+```
+
+API endpoints are now slug-free (`/api/v1/export`, `/api/v1/pages/{page}/export`) — the server resolves the project from the Bearer token. Old `projectSlug` values in existing project config YAML are harmless but ignored.
 
 ---
 
@@ -311,9 +323,9 @@ The sync flow uses Craft's queue system to avoid HTTP timeouts:
 1. Controller creates a `pending` import run record
 2. Pushes `SyncJob` to Craft's queue with the run ID
 3. Frontend polls `sync/status?runId=N` until status changes from `pending`
-4. Queue job: fetches export via `CopydeckApiService`, imports each page, updates the run record
+4. Queue job: fetches `GET /api/v1/export` via `CopydeckApiService`, imports each page, updates the run record
 
-API call uses `Craft::createGuzzleClient()` — the recommended HTTP client in Craft 5.
+API endpoints are slug-free — the project is resolved server-side from the Bearer token (see "API key format and project inference" above). API call uses `Craft::createGuzzleClient()` — the recommended HTTP client in Craft 5.
 
 ```php
 $response = Craft::createGuzzleClient()->request('GET', $endpoint, [
