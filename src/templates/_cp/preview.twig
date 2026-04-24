@@ -21,13 +21,13 @@
         {% endif %}
         <div style="margin-left:auto; display:flex; gap:12px; align-items:center;">
             {% if createCount %}
-                <span class="status green"></span> {{ createCount }} will be created
+                <span class="status green" style="margin-right:0;"></span> {{ createCount }} will be created
             {% endif %}
             {% if updateCount %}
-                <span class="status blue"></span> {{ updateCount }} will be updated
+                <span class="status blue" style="margin-right:0;"></span> {{ updateCount }} will be updated
             {% endif %}
             {% if totalWarnings %}
-                <span class="status orange"></span> {{ totalWarnings }} {{ totalWarnings == 1 ? 'warning' : 'warnings' }}
+                <span class="status orange" style="margin-right:0;"></span> {{ totalWarnings }} {{ totalWarnings == 1 ? 'warning' : 'warnings' }}
             {% endif %}
         </div>
     </div>
