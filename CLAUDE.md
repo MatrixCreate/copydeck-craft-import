@@ -1,4 +1,4 @@
-# Copydeck Craft Importer — Settled Patterns
+# Copydeck Craft Import — Settled Patterns
 
 Read this at the start of every session. Do not re-discover these patterns.
 

@@ -1,7 +1,7 @@
 <?php
 
 /**
- * Copydeck Importer — default block type mappings.
+ * Copydeck — default block type mappings.
  *
  * Keys are Copydeck JSON block type strings (exact, from export).
  * Values define the outer Craft Matrix block type and nested inner Matrix structure.

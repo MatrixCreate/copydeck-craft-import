@@ -5,7 +5,7 @@ namespace matrixcreate\copydeckimporter\migrations;
 use craft\db\Migration;
 
 /**
- * Installation migration for the Copydeck Importer plugin.
+ * Installation migration for the Copydeck plugin.
  *
  * @author Matrix Create <hello@matrixcreate.com>
  * @since 1.1.0

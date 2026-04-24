@@ -22,7 +22,7 @@ use matrixcreate\copydeckimporter\services\NodesRenderer;
 use yii\base\Event;
 
 /**
- * Copydeck Importer plugin.
+ * Copydeck plugin.
  *
  * @property-read CopydeckApiService $api
  * @property-read ImageImportService $images

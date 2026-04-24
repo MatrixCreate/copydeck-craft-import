@@ -19,7 +19,7 @@ use yii\web\BadRequestHttpException;
 use yii\web\Response;
 
 /**
- * CP controller for the Copydeck Importer dashboard, upload, preview, and result screens.
+ * CP controller for the Copydeck dashboard, upload, preview, and result screens.
  *
  * @author Matrix Create <hello@matrixcreate.com>
  * @since 1.1.0
