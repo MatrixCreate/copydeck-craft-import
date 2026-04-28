@@ -31,6 +31,12 @@
  *   'hyperButton'     → {label, url} object → Hyper link field array
  *   'buttonNodes'     → ContentNode[] → filters ctaButton nodes → actionButtons Matrix entries
  *   'faqNodes'        → ContentNode[] → splits at faq_items → richText/extraRichText/_faqItems
+ *   'uspContent'      → entire block fields → {heading:{level,text}, items:[string]} → <hN>+<ul> HTML
+ *
+ * Special contentiqKey '_block':
+ *   When the contentiqKey in outerFields is '_block', the entire block fields array is passed
+ *   to the handler instead of a single field value. Used for blocks (like USP) where the output
+ *   is derived from multiple source keys combined into one Craft field.
  *
  * Developer notes:
  *   'notes' is a block-level key (not inside 'fields') emitted by ContentIQ when the CSM
@@ -129,7 +135,10 @@ return [
     'usp' => [
         'outerType'   => 'contentiqUsp',
         'outerFields' => [
-            'nodes' => ['uspText', 'nodes'],  // heading + list nodes → CKEditor HTML
+            // '_block' passes the entire block fields to the handler.
+            // USP API shape: {heading: {level, text}, items: [string, ...]}
+            // Falls back to rendering a 'nodes' array if present instead.
+            '_block' => ['uspText', 'uspContent'],
         ],
         'innerMatrix' => null,
     ],

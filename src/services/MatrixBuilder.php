@@ -287,7 +287,8 @@ class MatrixBuilder extends Component
 
         // Resolve outer fields (e.g. layout dropdown on the outer entry type).
         foreach ($mapping['outerFields'] ?? [] as $contentiqKey => [$craftHandle, $handlerType]) {
-            $value   = $sourceFields[$contentiqKey] ?? null;
+            // '_block' is a special key meaning "pass the entire source fields to the handler".
+            $value   = $contentiqKey === '_block' ? $sourceFields : ($sourceFields[$contentiqKey] ?? null);
             $resolved = $this->_resolveFieldByHandler($handlerType, $craftHandle, $value, $imageReport, $dryRun);
 
             foreach ($resolved as $handle => $fieldValue) {
@@ -428,6 +429,7 @@ class MatrixBuilder extends Component
             'hyperButton'     => $this->_handleHyperButton($craftHandle, $value),
             'faqNodes'        => $this->_handleFaqNodes($craftHandle, $value),
             'buttonNodes'     => $this->_handleButtonNodes($craftHandle, $value),
+            'uspContent'      => $this->_handleUspContent($craftHandle, $value),
             default           => $this->_handlePassThrough($craftHandle, $value),
         };
     }
@@ -442,6 +444,55 @@ class MatrixBuilder extends Component
     private function _handleNodes(string $handle, mixed $value): array
     {
         $html = ContentIQImporter::$plugin->nodes->render(is_array($value) ? $value : []);
+
+        return [$handle => $html];
+    }
+
+    /**
+     * Builds CKEditor HTML from a USP block's fields.
+     *
+     * The ContentIQ USP block sends content as two separate keys:
+     *   heading → {level: int, text: string} → <hN>text</hN>
+     *   items   → string[]                  → <ul><li>…</li></ul>
+     *
+     * Falls back to rendering a 'nodes' array if present (legacy / future format).
+     *
+     * @param string $handle
+     * @param mixed  $value  Entire block fields array (passed via '_block' contentiqKey).
+     * @return array<string, string>
+     */
+    private function _handleUspContent(string $handle, mixed $value): array
+    {
+        if (!is_array($value)) {
+            return [$handle => ''];
+        }
+
+        // Fallback: if a 'nodes' array is present, render it via NodesRenderer.
+        if (!empty($value['nodes']) && is_array($value['nodes'])) {
+            $html = ContentIQImporter::$plugin->nodes->render($value['nodes']);
+            return [$handle => $html];
+        }
+
+        $html = '';
+
+        // heading — {level, text}
+        $heading = $value['heading'] ?? null;
+        if (is_array($heading) && isset($heading['text']) && (string)$heading['text'] !== '') {
+            $level = max(1, min(6, (int)($heading['level'] ?? 2)));
+            $text  = htmlspecialchars((string)$heading['text'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $html .= "<h{$level}>{$text}</h{$level}>";
+        }
+
+        // items — flat string array → <ul>
+        $items = $value['items'] ?? [];
+        if (!empty($items) && is_array($items)) {
+            $lis = '';
+            foreach ($items as $item) {
+                $text  = htmlspecialchars((string)$item, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                $lis  .= "<li>{$text}</li>";
+            }
+            $html .= "<ul>{$lis}</ul>";
+        }
 
         return [$handle => $html];
     }
