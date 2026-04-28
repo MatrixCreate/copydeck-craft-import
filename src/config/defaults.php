@@ -150,4 +150,13 @@ return [
         ],
         'innerMatrix' => null,
     ],
+
+    'custom' => [
+        'outerType'   => 'contentiqCustom',
+        'outerFields' => [
+            'nodes' => ['contentiqContent', 'nodes'],  // all content nodes → CKEditor HTML
+            'image' => ['contentiqImage',   'image'],  // optional single asset
+        ],
+        'innerMatrix' => null,
+    ],
 ];
