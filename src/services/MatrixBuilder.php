@@ -115,9 +115,20 @@ class MatrixBuilder extends Component
                 );
             }
 
-            $allFields             = array_merge($outerFields, $innerMatrixData);
-            $key                   = 'new' . (++$counter);
-            $matrixData[$key]      = ['type' => $mapping['outerType'], 'fields' => $allFields];
+            $allFields = array_merge($outerFields, $innerMatrixData);
+
+            // Populate contentiqNotes from the block-level notes key if present.
+            // For grouped blocks, combine notes from all blocks in the group.
+            $notesSources = isset($item['_groupedBlocks'])
+                ? array_column($item['_groupedBlocks'], 'notes')
+                : [$item['notes'] ?? ''];
+            $notes = implode("\n\n", array_filter(array_map('trim', $notesSources)));
+            if ($notes !== '') {
+                $allFields['contentiqNotes'] = $notes;
+            }
+
+            $key              = 'new' . (++$counter);
+            $matrixData[$key] = ['type' => $mapping['outerType'], 'fields' => $allFields];
 
             $innerCount = isset($item['_groupedBlocks']) ? count($item['_groupedBlocks']) : 1;
             $blockReport[] = [
