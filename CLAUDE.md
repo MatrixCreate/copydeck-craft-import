@@ -234,9 +234,11 @@ The importer creates entries in the `callsToAction` section (channel):
 - **Section**: `callsToAction` (handle)
 - **Entry type**: `callToActionEntry` (handle)
 - **Fields**: `title`, `richText` (CKEditor), `image` (Assets), `actionButtons` (Matrix → `actionButton` entries with Hyper `actionButton` field)
-- **Idempotent**: matches by title to avoid duplicates across batch imports
+- **Idempotent**: matches by title; existing entries are **updated** on re-import (not just returned) so re-syncs fix stale data
 
-The `actionButtons` field is a Matrix containing `actionButton` entry types. Each has one field: `actionButton` (Hyper). Buttons include `linkClass: 'btn btn-primary'`. Buttons without both a label and URL are skipped.
+The `actionButtons` field is a Matrix containing `actionButton` entry types. Each has one field: `actionButton` (Hyper). Buttons include `linkClass: 'btn btn-primary'`. Buttons where both label and URL are empty are skipped.
+
+Buttons come from `ctaButton` nodes in `fields.nodes` (same pattern as faq/price_list blocks). The `_resolveCtaEntry` method filters ctaButton nodes out of the nodes array before rendering richText, and builds `actionButtons` from them. Falls back to a flat `fields.buttons` array for legacy data.
 
 ---
 

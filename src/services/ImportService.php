@@ -700,13 +700,13 @@ class ImportService extends Component
     }
 
     /**
-     * Creates (or finds) a callToActionEntry from a ContentIQ CTA block.
+     * Creates (or updates) a callToActionEntry from a ContentIQ CTA block.
      *
-     * Extracts title from the first heading node, renders richText from nodes,
-     * imports image if present, and builds actionButtons Matrix entries from
-     * the buttons array.
+     * Extracts title from the first heading node, renders richText from non-button
+     * nodes, imports image if present, and builds actionButtons Matrix entries from
+     * ctaButton nodes in the nodes array (or falls back to a flat fields.buttons array).
      *
-     * Idempotent: matches existing entries by title to avoid duplicates.
+     * Idempotent by title: existing entries are updated so re-imports fix stale data.
      *
      * @param array  $ctaBlock  The raw CTA block from the JSON.
      * @param array  &$result   Result array, mutated to add warnings/images.
@@ -716,7 +716,7 @@ class ImportService extends Component
     private function _resolveCtaEntry(array $ctaBlock, array &$result, bool $dryRun): ?int
     {
         $fields = $ctaBlock['fields'] ?? [];
-        $nodes  = $fields['nodes'] ?? [];
+        $nodes  = is_array($fields['nodes'] ?? null) ? $fields['nodes'] : [];
 
         // Extract title from first heading node.
         $title = 'Call to Action';
@@ -727,19 +727,11 @@ class ImportService extends Component
             }
         }
 
-        // Idempotency — find existing CTA entry by title.
-        $existing = Entry::find()
-            ->section('callsToAction')
-            ->title($title)
-            ->status(null)
-            ->one();
-
-        if ($existing !== null) {
-            return $existing->id;
-        }
-
         if ($dryRun) {
-            return null;
+            // Idempotency check for dry run — return existing ID if found.
+            $existing = Entry::find()->section('callsToAction')->title($title)->status(null)->one();
+
+            return $existing?->id;
         }
 
         // Resolve section and entry type.
@@ -757,13 +749,41 @@ class ImportService extends Component
             return null;
         }
 
+        // Separate ctaButton nodes (→ actionButtons Matrix) from content nodes (→ richText).
+        // ContentIQ sends buttons as ctaButton nodes in fields.nodes (same pattern as faq/price_list).
+        $contentNodes      = [];
+        $actionButtonsData = [];
+        $btnCounter        = 0;
+
+        foreach ($nodes as $node) {
+            if (($node['type'] ?? '') === 'ctaButton') {
+                $label = (string)($node['label'] ?? '');
+                $url   = (string)($node['url'] ?? '');
+
+                if ($label !== '' || $url !== '') {
+                    $actionButtonsData['new' . (++$btnCounter)] = [
+                        'type'   => 'actionButton',
+                        'fields' => [
+                            'actionButton' => [[
+                                'type'      => 'verbb\\hyper\\links\\Url',
+                                'handle'    => 'default-verbb-hyper-links-url',
+                                'linkValue' => $url,
+                                'linkText'  => $label,
+                                'linkClass' => 'btn btn-primary',
+                            ]],
+                        ],
+                    ];
+                }
+            } else {
+                $contentNodes[] = $node;
+            }
+        }
+
         // Build field values.
         $ctaFieldValues = [];
 
-        // richText — render nodes to HTML.
-        $ctaFieldValues['richText'] = ContentIQImporter::$plugin->nodes->render(
-            is_array($nodes) ? $nodes : [],
-        );
+        // richText — render content nodes only (ctaButton nodes excluded above).
+        $ctaFieldValues['richText'] = ContentIQImporter::$plugin->nodes->render($contentNodes);
 
         // image — import if present.
         $imageData = $fields['image'] ?? null;
@@ -775,10 +795,27 @@ class ImportService extends Component
             }
         }
 
-        // actionButtons — Matrix field with actionButton inner entries.
-        $buttons = $fields['buttons'] ?? [];
-        if (!empty($buttons) && is_array($buttons)) {
-            $ctaFieldValues['actionButtons'] = $this->_buildActionButtons($buttons);
+        // actionButtons — prefer ctaButton nodes; fall back to legacy flat fields.buttons array.
+        if (empty($actionButtonsData)) {
+            $actionButtonsData = $this->_buildActionButtons($fields['buttons'] ?? []);
+        }
+
+        if (!empty($actionButtonsData)) {
+            $ctaFieldValues['actionButtons'] = $actionButtonsData;
+        }
+
+        // Idempotency — update existing entry rather than creating a duplicate.
+        $existing = Entry::find()->section('callsToAction')->title($title)->status(null)->one();
+
+        if ($existing !== null) {
+            $existing->setFieldValues($ctaFieldValues);
+
+            if (!Craft::$app->getElements()->saveElement($existing, false)) {
+                $errors = implode(', ', $existing->getFirstErrors());
+                Craft::warning("ContentIQImporter: CTA entry update failed for '{$title}': {$errors}", __METHOD__);
+            }
+
+            return $existing->id;
         }
 
         // Create the CTA entry.
@@ -804,10 +841,10 @@ class ImportService extends Component
     }
 
     /**
-     * Builds the actionButtons Matrix field data from a ContentIQ buttons array.
+     * Builds the actionButtons Matrix field data from a ContentIQ flat buttons array.
      *
      * Each button becomes an actionButton entry with a Hyper actionButton field.
-     * Buttons without a URL are skipped.
+     * Buttons where both label and URL are empty are skipped.
      *
      * @param array $buttons [{label, url}, ...]
      * @return array<string, array> Matrix data keyed by 'new1', 'new2', etc.
@@ -823,28 +860,22 @@ class ImportService extends Component
             }
 
             $label = (string)($button['label'] ?? '');
-            $url   = $button['url'] ?? null;
+            $url   = (string)($button['url'] ?? '');
 
-            // Skip buttons without a URL — they can't be linked.
-            if (empty($url)) {
+            if ($label === '' && $url === '') {
                 continue;
             }
-
-            // Hyper field serialized format: array of link objects.
-            $hyperValue = [
-                [
-                    'type'      => 'verbb\\hyper\\links\\Url',
-                    'handle'    => 'default-verbb-hyper-links-url',
-                    'linkValue' => (string)$url,
-                    'linkText'  => $label,
-                    'linkClass' => 'btn btn-primary',
-                ],
-            ];
 
             $matrixData['new' . (++$counter)] = [
                 'type'   => 'actionButton',
                 'fields' => [
-                    'actionButton' => $hyperValue,
+                    'actionButton' => [[
+                        'type'      => 'verbb\\hyper\\links\\Url',
+                        'handle'    => 'default-verbb-hyper-links-url',
+                        'linkValue' => $url,
+                        'linkText'  => $label,
+                        'linkClass' => 'btn btn-primary',
+                    ]],
                 ],
             ];
         }
