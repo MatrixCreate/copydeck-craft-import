@@ -32,6 +32,8 @@ The path repo with `symlink: true` means edits in this plugin directory are inst
 
 **Never commit the path repo.** The `git checkout` in the revert step ensures `composer.json` and `composer.lock` are always clean before pushing. Staging deployments run `composer install` from the clean committed state and pull from Packagist.
 
+**The `git checkout` only works if the path repo was never committed.** If it was accidentally committed (e.g. via `git add -A`), `git checkout` restores HEAD — which already contains the path repo — and `composer install` will still fail on any machine without that local path. Fix: manually remove the `repositories` entry and `@dev` constraint from `composer.json`, run `composer update matrixcreate/contentiq-craft-import`, then commit and push both files.
+
 ---
 
 ## Do not use drafts
