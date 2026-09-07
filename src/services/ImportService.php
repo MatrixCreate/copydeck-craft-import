@@ -798,23 +798,28 @@ class ImportService extends Component
      * and only carry SEO for portal-on collections. Content is serialised to HTML
      * and written to the configured contentField.
      *
-     * When the wire also carries a non-empty `blocks[]` (ContentIQ's contract is
-     * either `blocks` or `content`, never both), the same Matrix/hero/CTA
+     * When the wire also carries a non-empty `blocks[]`, the same Matrix/hero/CTA
      * machinery the page path uses runs via _buildBlockFieldValues() and is
      * merged in — routed to `blocksField` when the content_type configures one,
-     * otherwise config['matrixField'].
+     * otherwise config['matrixField']. `blocks[]` can additionally carry an
+     * optional `content` key: the leftover top-level ProseMirror nodes not
+     * marked up as a block, omitted entirely when nothing is left over.
      *
-     * §7.6/§7.6.1 (rulings O2/O4) — when blocks[] owns the page, contentField
-     * and headingField are explicitly cleared to '' (see
-     * _buildCollectionChildContentFields()), never left populated from a prior
-     * content-only sync. Two guards fire around that write: (1) the CP
-     * dry-run preview and the real sync report share the same warning-
-     * generation code path, so both surface it identically; (2) the first time
-     * this clears a previously non-empty contentField/headingField, or
-     * replaces a previously non-empty Matrix, a warning is added to the
-     * result (see _buildBlockOwnershipWarnings()) — but nothing is ever
-     * actually written to an existing entry unless a human has unlocked it
-     * (SyncJob's per-entry auto-lock, untouched by this change).
+     * §7.6/§7.6.1 (rulings O2/O4) — when blocks[] owns the page, headingField
+     * is always explicitly cleared to '' (blocks own the heading —
+     * extractHeading() never runs on this path). contentField depends on
+     * whether there's leftover content: non-empty leftover renders wholesale
+     * into contentField, otherwise contentField is explicitly cleared to ''
+     * too — never left populated from a prior content-only sync (see
+     * _buildCollectionChildContentFields()). Two guards fire around that
+     * write: (1) the CP dry-run preview and the real sync report share the
+     * same warning-generation code path, so both surface it identically; (2)
+     * the first time this clears (or replaces with leftover content) a
+     * previously non-empty contentField/headingField, or replaces a
+     * previously non-empty Matrix, a warning is added to the result (see
+     * _buildBlockOwnershipWarnings()) — but nothing is ever actually written
+     * to an existing entry unless a human has unlocked it (SyncJob's
+     * per-entry auto-lock, untouched by this change).
      *
      * Returns the standard result shape with `contentType`/`sectionLabel` set, or a
      * non-fatal skip (success, skipped=true, warning) when the content_type is unmapped.
@@ -869,8 +874,13 @@ class ImportService extends Component
         ContentIQImporter::$plugin->images->prepare($volumeHandle, $folderPath);
 
         // ContentIQ is transitioning collection children from a raw `content`
-        // ProseMirror document to structured `blocks[]` — the wire contract is
-        // either/or, never both (§7.6/§7.6.1 — rulings O2/O4).
+        // ProseMirror document to structured `blocks[]`. Current wire contract
+        // (§7.6/§7.6.1 — rulings O2/O4): ranges marked up → `blocks[]` plus an
+        // OPTIONAL `content` key holding only the leftover top-level nodes not
+        // marked up as a block (omitted when nothing is left over); no ranges
+        // marked up → `content` holds the full doc, no `blocks`, unchanged.
+        // Older ContentIQ deployments that still only ever send blocks[] with
+        // no `content` key normalise identically — $content stays [].
         $content   = $data['content'] ?? [];
         $blocks    = $data['blocks'] ?? [];
         $hasBlocks = !empty($blocks);
@@ -887,6 +897,13 @@ class ImportService extends Component
             $contentFieldHandle,
             $headingFieldHandle,
         );
+
+        // Whether the contentField write above carries non-empty leftover
+        // prose — drives the "clearing" vs "replacing" wording of the guard-2
+        // warning further down (_buildBlockOwnershipWarnings()). Derived from
+        // the rendered value, not the raw doc, so a semantically-empty doc
+        // (e.g. {type: doc, content: []}) still reads as a clear.
+        $hasLeftoverContent = $hasBlocks && ($fieldValues[$contentFieldHandle] ?? '') !== '';
 
         // When blocks[] is present and non-empty, run the same Matrix/hero/CTA
         // machinery the page path uses. Absent or empty blocks[] leaves this
@@ -924,7 +941,8 @@ class ImportService extends Component
 
         // §7.6.1 guard 2 / §7.7 — warn (in both the CP dry-run preview and the
         // real sync report — this check runs before the dry-run early return
-        // below) the first time this write is about to clear a previously
+        // below) the first time this write is about to clear (or replace with
+        // leftover content — see $hasLeftoverContent above) a previously
         // non-empty contentField/headingField, or replace a previously
         // non-empty Matrix with new element IDs. Read-only against $existing's
         // CURRENT values; never silent, since an unlocked sync's write is
@@ -952,6 +970,7 @@ class ImportService extends Component
                 $contentFieldHandle,
                 $headingFieldHandle,
                 $targetMatrixHandle,
+                $hasLeftoverContent,
             ));
         }
 
@@ -2622,6 +2641,9 @@ class ImportService extends Component
      * @param string      $contentFieldHandle
      * @param string|null $headingFieldHandle
      * @param string      $matrixHandle
+     * @param bool        $contentReplacedWithLeftover Whether contentField is being written with
+     *                    non-empty leftover (unmarked) ProseMirror content this run, rather than
+     *                    cleared to '' — changes the contentField warning's wording only.
      * @return string[]
      */
     private function _buildBlockOwnershipWarnings(
@@ -2631,11 +2653,14 @@ class ImportService extends Component
         string $contentFieldHandle,
         ?string $headingFieldHandle,
         string $matrixHandle,
+        bool $contentReplacedWithLeftover,
     ): array {
         $warnings = [];
 
         if ($contentWasNonEmpty) {
-            $warnings[] = "Blocks now own this page — clearing previously non-empty '{$contentFieldHandle}' field.";
+            $warnings[] = $contentReplacedWithLeftover
+                ? "Blocks now own this page — replacing previously non-empty '{$contentFieldHandle}' field with leftover (unmarked) content."
+                : "Blocks now own this page — clearing previously non-empty '{$contentFieldHandle}' field.";
         }
 
         if ($headingWasNonEmpty && $headingFieldHandle !== null) {
@@ -2658,17 +2683,26 @@ class ImportService extends Component
      * _importCollectionChild() so it's unit-testable without a Craft bootstrap
      * (see tests/run-transforms.php):
      *
-     *   - blocks present (O2/O4): the block(s) own the page. contentField and
-     *     headingField (when configured) are set to '' EXPLICITLY — not
-     *     omitted — so a prior content-only sync's stale prose/heading can't
-     *     linger and duplicate the block's own heading (two <h1>s).
+     *   - blocks present (O2/O4): the block(s) own the page, so headingField
+     *     (when configured) is set to '' EXPLICITLY — not omitted, and
+     *     extractHeading() is never run here — so a prior content-only
+     *     sync's stale heading can't linger and duplicate the block's own
+     *     heading (two <h1>s). contentField depends on whether `$content`
+     *     carries non-empty leftover prose (top-level ProseMirror nodes not
+     *     marked up as a block): if so, that leftover renders wholesale
+     *     (unstripped — blocks own the heading, not this branch) into
+     *     contentField; otherwise contentField is set to '' EXPLICITLY too,
+     *     same as before this leftover-content contract existed (this is
+     *     also what happens against an older ContentiQ deployment that still
+     *     only ever sends blocks[] with no `content` key at all).
      *     _filterToValidFields() makes the write harmless where a handle is
      *     absent from the target layout.
      *   - blocks absent: unchanged pre-§7.1 behaviour — optionally lift the
      *     first H1 out of the ProseMirror doc into headingField, then render
      *     the (possibly H1-stripped) doc into contentField.
      *
-     * @param array       $content             The document.content ProseMirror doc (or []).
+     * @param array       $content             The document.content ProseMirror doc, or the blocks[]
+     *                                         leftover-content doc (or [] when neither applies).
      * @param bool        $hasBlocks           Whether this collection child carries non-empty blocks[].
      * @param string      $contentFieldHandle
      * @param string|null $headingFieldHandle
@@ -2681,7 +2715,11 @@ class ImportService extends Component
         ?string $headingFieldHandle,
     ): array {
         if ($hasBlocks) {
-            $fieldValues = [$contentFieldHandle => ''];
+            $fieldValues = [
+                $contentFieldHandle => !empty($content)
+                    ? ContentIQImporter::$plugin->nodes->renderDocument($content)
+                    : '',
+            ];
 
             if ($headingFieldHandle !== null) {
                 $fieldValues[$headingFieldHandle] = '';

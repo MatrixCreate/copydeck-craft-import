@@ -2,6 +2,18 @@
 
 Capped rolling log — older entries roll off verbatim to `docs/_archive/`. Durable knowledge belongs in `docs/`, not accumulated here.
 
+## Collection-child leftover content — `blocks[]` + optional `content` together (2026-09-07)
+
+ContentiQ's export contract for collection children is changing: a page with ranges marked up can now carry `blocks[]` PLUS an optional `content` key holding only the leftover top-level ProseMirror nodes not marked up as a block (omitted entirely when nothing is left over). Previously the wire contract was strictly either/or, and `_buildCollectionChildContentFields()` always cleared `contentField`/`headingField` to `''` whenever `blocks[]` was present, discarding any content outright.
+
+`_buildCollectionChildContentFields()` (`src/services/ImportService.php:2710`) now branches on whether that leftover `content` is non-empty: `headingField` is always explicitly cleared to `''` when blocks own the page (blocks own the heading — `extractHeading()` never runs on this path); `contentField` renders the leftover doc wholesale via `NodesRenderer::renderDocument()` when non-empty, otherwise it's cleared to `''` exactly as before — which also keeps behaviour byte-identical against older ContentiQ deployments that still send `blocks[]` with no `content` key at all. `_importCollectionChild()` computes `$hasLeftoverContent` once (`!empty($blocks) && !empty($content)`) and passes it through to both the field-value build and the guard-2 warning builder.
+
+`_buildBlockOwnershipWarnings()` gained a `$contentReplacedWithLeftover` parameter — the contentField warning now reads "…replacing previously non-empty '{field}' field with leftover (unmarked) content." when leftover content is being written, vs. the existing "…clearing previously non-empty '{field}' field." when it's genuinely cleared. `headingField`/matrix warnings are unaffected.
+
+Docs updated in the same change: `docs/import-pipeline.md` ("Content-type routing for collection children" — the wire-contract paragraph rewritten) and `docs/integration.md` (export envelope paragraph corrected — `content` can now travel alongside `blocks[]`).
+
+`php -l` clean on `src/services/ImportService.php` and `tests/run-transforms.php`. `_buildCollectionChildContentFields()` and `_buildBlockOwnershipWarnings()` are both pure and already covered via the existing Reflection + craft-stubs harness — extended with cases for non-empty leftover content (contentField rendered wholesale, heading still cleared), empty/absent leftover content (both cleared, unchanged from before), and the new warning wording, alongside the untouched no-blocks path. `tests/run-transforms.php` now 147 assertions (was 139), all passing; `tests/run-security.php` untouched. Not released — no version bump, no tag.
+
 ## Route CTA blocks by ContentiQ `fields.source` — page vs. global footer CTA (2026-09-04)
 
 Every `call_to_action` block now carries `fields.source` (`'page'` or `'global'`, absent ⇒ `'global'` — ContentiQ's own default, mirrored verbatim rather than re-decided), and the importer routes on it instead of always creating an inline per-page block.
