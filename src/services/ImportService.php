@@ -802,19 +802,20 @@ class ImportService extends Component
      * machinery the page path uses runs via _buildBlockFieldValues() and is
      * merged in — routed to `blocksField` when the content_type configures one,
      * otherwise config['matrixField']. `blocks[]` can additionally carry an
-     * optional `content` key: the leftover top-level ProseMirror nodes not
-     * marked up as a block, omitted entirely when nothing is left over.
+     * optional `content` key: the page's explicitly-marked Body Text sections,
+     * merged in page order, present only when the editor marked at least one
+     * Body Text range (absent entirely when they marked none).
      *
      * §7.6/§7.6.1 (rulings O2/O4) — when blocks[] owns the page, headingField
      * is always explicitly cleared to '' (blocks own the heading —
      * extractHeading() never runs on this path). contentField depends on
-     * whether there's leftover content: non-empty leftover renders wholesale
-     * into contentField, otherwise contentField is explicitly cleared to ''
-     * too — never left populated from a prior content-only sync (see
-     * _buildCollectionChildContentFields()). Two guards fire around that
+     * whether the editor marked any Body Text: non-empty Body Text renders
+     * wholesale into contentField, otherwise contentField is explicitly
+     * cleared to '' too — never left populated from a prior content-only sync
+     * (see _buildCollectionChildContentFields()). Two guards fire around that
      * write: (1) the CP dry-run preview and the real sync report share the
      * same warning-generation code path, so both surface it identically; (2)
-     * the first time this clears (or replaces with leftover content) a
+     * the first time this clears (or replaces with Body Text content) a
      * previously non-empty contentField/headingField, or replaces a
      * previously non-empty Matrix, a warning is added to the result (see
      * _buildBlockOwnershipWarnings()) — but nothing is ever actually written
@@ -876,11 +877,12 @@ class ImportService extends Component
         // ContentIQ is transitioning collection children from a raw `content`
         // ProseMirror document to structured `blocks[]`. Current wire contract
         // (§7.6/§7.6.1 — rulings O2/O4): ranges marked up → `blocks[]` plus an
-        // OPTIONAL `content` key holding only the leftover top-level nodes not
-        // marked up as a block (omitted when nothing is left over); no ranges
-        // marked up → `content` holds the full doc, no `blocks`, unchanged.
-        // Older ContentIQ deployments that still only ever send blocks[] with
-        // no `content` key normalise identically — $content stays [].
+        // OPTIONAL `content` key holding the editor's explicitly-marked Body
+        // Text sections, merged in page order (absent entirely when the
+        // editor marked none); no ranges marked up → `content` holds the full
+        // doc, no `blocks`, unchanged. Older ContentIQ deployments that still
+        // only ever send blocks[] with no `content` key normalise identically
+        // — $content stays [].
         $content   = $data['content'] ?? [];
         $blocks    = $data['blocks'] ?? [];
         $hasBlocks = !empty($blocks);
@@ -898,12 +900,12 @@ class ImportService extends Component
             $headingFieldHandle,
         );
 
-        // Whether the contentField write above carries non-empty leftover
-        // prose — drives the "clearing" vs "replacing" wording of the guard-2
+        // Whether the contentField write above carries non-empty Body Text —
+        // drives the "clearing" vs "replacing" wording of the guard-2
         // warning further down (_buildBlockOwnershipWarnings()). Derived from
         // the rendered value, not the raw doc, so a semantically-empty doc
         // (e.g. {type: doc, content: []}) still reads as a clear.
-        $hasLeftoverContent = $hasBlocks && ($fieldValues[$contentFieldHandle] ?? '') !== '';
+        $hasBodyTextContent = $hasBlocks && ($fieldValues[$contentFieldHandle] ?? '') !== '';
 
         // When blocks[] is present and non-empty, run the same Matrix/hero/CTA
         // machinery the page path uses. Absent or empty blocks[] leaves this
@@ -942,7 +944,7 @@ class ImportService extends Component
         // §7.6.1 guard 2 / §7.7 — warn (in both the CP dry-run preview and the
         // real sync report — this check runs before the dry-run early return
         // below) the first time this write is about to clear (or replace with
-        // leftover content — see $hasLeftoverContent above) a previously
+        // Body Text content — see $hasBodyTextContent above) a previously
         // non-empty contentField/headingField, or replace a previously
         // non-empty Matrix with new element IDs. Read-only against $existing's
         // CURRENT values; never silent, since an unlocked sync's write is
@@ -970,7 +972,7 @@ class ImportService extends Component
                 $contentFieldHandle,
                 $headingFieldHandle,
                 $targetMatrixHandle,
-                $hasLeftoverContent,
+                $hasBodyTextContent,
             ));
         }
 
@@ -2641,8 +2643,8 @@ class ImportService extends Component
      * @param string      $contentFieldHandle
      * @param string|null $headingFieldHandle
      * @param string      $matrixHandle
-     * @param bool        $contentReplacedWithLeftover Whether contentField is being written with
-     *                    non-empty leftover (unmarked) ProseMirror content this run, rather than
+     * @param bool        $contentReplacedWithBodyText Whether contentField is being written with
+     *                    non-empty, explicitly-marked Body Text content this run, rather than
      *                    cleared to '' — changes the contentField warning's wording only.
      * @return string[]
      */
@@ -2653,13 +2655,13 @@ class ImportService extends Component
         string $contentFieldHandle,
         ?string $headingFieldHandle,
         string $matrixHandle,
-        bool $contentReplacedWithLeftover,
+        bool $contentReplacedWithBodyText,
     ): array {
         $warnings = [];
 
         if ($contentWasNonEmpty) {
-            $warnings[] = $contentReplacedWithLeftover
-                ? "Blocks now own this page — replacing previously non-empty '{$contentFieldHandle}' field with leftover (unmarked) content."
+            $warnings[] = $contentReplacedWithBodyText
+                ? "Blocks now own this page — replacing previously non-empty '{$contentFieldHandle}' field with Body Text content."
                 : "Blocks now own this page — clearing previously non-empty '{$contentFieldHandle}' field.";
         }
 
@@ -2688,11 +2690,11 @@ class ImportService extends Component
      *     extractHeading() is never run here — so a prior content-only
      *     sync's stale heading can't linger and duplicate the block's own
      *     heading (two <h1>s). contentField depends on whether `$content`
-     *     carries non-empty leftover prose (top-level ProseMirror nodes not
-     *     marked up as a block): if so, that leftover renders wholesale
+     *     carries non-empty Body Text (the editor's explicitly-marked Body
+     *     Text sections): if so, that Body Text renders wholesale
      *     (unstripped — blocks own the heading, not this branch) into
      *     contentField; otherwise contentField is set to '' EXPLICITLY too,
-     *     same as before this leftover-content contract existed (this is
+     *     same as before this Body Text contract existed (this is
      *     also what happens against an older ContentiQ deployment that still
      *     only ever sends blocks[] with no `content` key at all).
      *     _filterToValidFields() makes the write harmless where a handle is
@@ -2702,7 +2704,7 @@ class ImportService extends Component
      *     the (possibly H1-stripped) doc into contentField.
      *
      * @param array       $content             The document.content ProseMirror doc, or the blocks[]
-     *                                         leftover-content doc (or [] when neither applies).
+     *                                         Body Text doc (or [] when neither applies).
      * @param bool        $hasBlocks           Whether this collection child carries non-empty blocks[].
      * @param string      $contentFieldHandle
      * @param string|null $headingFieldHandle

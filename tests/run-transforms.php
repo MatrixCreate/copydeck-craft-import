@@ -359,7 +359,7 @@ check(
 
 // -----------------------------------------------------------------------------
 // ImportService — §7.5 hero shape probe; §7.6/§7.6.1 legacy-field clearing /
-// leftover-content replacement (rulings O2/O4) and its guard-2 "was this
+// Body-Text-content replacement (rulings O2/O4) and its guard-2 "was this
 // previously non-empty" warnings.
 //
 // These are exercised through private methods via Reflection rather than the
@@ -514,7 +514,7 @@ check(
 );
 
 // -----------------------------------------------------------------------------
-echo "\nImportService — collection-child legacy-field clearing / leftover-content replacement (§7.6/§7.6.1, rulings O2/O4)\n";
+echo "\nImportService — collection-child legacy-field clearing / Body-Text-content replacement (§7.6/§7.6.1, rulings O2/O4)\n";
 
 $docWithH1 = [
     'type' => 'doc',
@@ -531,55 +531,55 @@ $docWithoutH1 = [
     ],
 ];
 
-$emptyLeftoverDoc = ['type' => 'doc', 'content' => []];
+$emptyBodyTextDoc = ['type' => 'doc', 'content' => []];
 
-// (b) blocks present, no leftover `content` (empty/absent) → contentField AND
+// (b) blocks present, no Body Text `content` (empty/absent) → contentField AND
 // headingField are '' — explicitly present as empty strings, never omitted.
 // This is also what an older ContentiQ deployment produces: blocks[] with no
 // `content` key at all normalises to [] before this call.
-$blocksPresentNoLeftover = callPrivate($importService, '_buildCollectionChildContentFields', [
-    $emptyLeftoverDoc, true, 'articleContent', 'headline',
+$blocksPresentNoBodyText = callPrivate($importService, '_buildCollectionChildContentFields', [
+    $emptyBodyTextDoc, true, 'articleContent', 'headline',
 ]);
-check('blocks present, no leftover content: contentField key exists', true, array_key_exists('articleContent', $blocksPresentNoLeftover));
-check('blocks present, no leftover content: contentField is empty string (not absent)', '', $blocksPresentNoLeftover['articleContent'] ?? 'MISSING');
-check('blocks present, no leftover content: headingField key exists', true, array_key_exists('headline', $blocksPresentNoLeftover));
-check('blocks present, no leftover content: headingField is empty string (not absent)', '', $blocksPresentNoLeftover['headline'] ?? 'MISSING');
-check('blocks present, no leftover content: exactly two keys written (no stray heading omission)', 2, count($blocksPresentNoLeftover));
+check('blocks present, no Body Text content: contentField key exists', true, array_key_exists('articleContent', $blocksPresentNoBodyText));
+check('blocks present, no Body Text content: contentField is empty string (not absent)', '', $blocksPresentNoBodyText['articleContent'] ?? 'MISSING');
+check('blocks present, no Body Text content: headingField key exists', true, array_key_exists('headline', $blocksPresentNoBodyText));
+check('blocks present, no Body Text content: headingField is empty string (not absent)', '', $blocksPresentNoBodyText['headline'] ?? 'MISSING');
+check('blocks present, no Body Text content: exactly two keys written (no stray heading omission)', 2, count($blocksPresentNoBodyText));
 
-// blocks present, no leftover content, content_type has no headingField
+// blocks present, no Body Text content, content_type has no headingField
 // configured (e.g. blog_categories) → only contentField is cleared; there is
 // no heading key to clear.
-$blocksPresentNoLeftoverNoHeading = callPrivate($importService, '_buildCollectionChildContentFields', [
+$blocksPresentNoBodyTextNoHeading = callPrivate($importService, '_buildCollectionChildContentFields', [
     [], true, 'body', null,
 ]);
-check('blocks present, no leftover content, no headingField configured: only contentField key written', ['body'], array_keys($blocksPresentNoLeftoverNoHeading));
-check('blocks present, no leftover content, no headingField configured: contentField is empty string', '', $blocksPresentNoLeftoverNoHeading['body'] ?? 'MISSING');
+check('blocks present, no Body Text content, no headingField configured: only contentField key written', ['body'], array_keys($blocksPresentNoBodyTextNoHeading));
+check('blocks present, no Body Text content, no headingField configured: contentField is empty string', '', $blocksPresentNoBodyTextNoHeading['body'] ?? 'MISSING');
 
-// (a) blocks present WITH non-empty leftover `content` (a range only covered
-// part of the page) → the leftover prose renders wholesale into contentField
+// (a) blocks present WITH non-empty Body Text `content` (a range only covered
+// part of the page) → the Body Text prose renders wholesale into contentField
 // (H1 kept, NOT extracted — blocks own the heading, extractHeading() must
 // never run on this branch); headingField is still cleared to ''.
-$blocksPresentWithLeftover = callPrivate($importService, '_buildCollectionChildContentFields', [
+$blocksPresentWithBodyText = callPrivate($importService, '_buildCollectionChildContentFields', [
     $docWithH1, true, 'articleContent', 'headline',
 ]);
 check(
-    'blocks present + leftover content: contentField renders the leftover doc wholesale, H1 kept (not extracted)',
+    'blocks present + Body Text content: contentField renders the Body Text doc wholesale, H1 kept (not extracted)',
     '<h1>My Article Heading</h1><p>Body copy.</p>',
-    $blocksPresentWithLeftover['articleContent'] ?? null,
+    $blocksPresentWithBodyText['articleContent'] ?? null,
 );
-check('blocks present + leftover content: headingField still cleared to empty string', '', $blocksPresentWithLeftover['headline'] ?? 'MISSING');
-check('blocks present + leftover content: exactly two keys written', 2, count($blocksPresentWithLeftover));
+check('blocks present + Body Text content: headingField still cleared to empty string', '', $blocksPresentWithBodyText['headline'] ?? 'MISSING');
+check('blocks present + Body Text content: exactly two keys written', 2, count($blocksPresentWithBodyText));
 
-// blocks present + leftover content, no headingField configured → only
-// contentField, holding the rendered leftover.
-$blocksPresentWithLeftoverNoHeading = callPrivate($importService, '_buildCollectionChildContentFields', [
+// blocks present + Body Text content, no headingField configured → only
+// contentField, holding the rendered Body Text.
+$blocksPresentWithBodyTextNoHeading = callPrivate($importService, '_buildCollectionChildContentFields', [
     $docWithoutH1, true, 'body', null,
 ]);
-check('blocks present + leftover content, no headingField configured: only contentField key written', ['body'], array_keys($blocksPresentWithLeftoverNoHeading));
+check('blocks present + Body Text content, no headingField configured: only contentField key written', ['body'], array_keys($blocksPresentWithBodyTextNoHeading));
 check(
-    'blocks present + leftover content, no headingField configured: contentField renders the leftover paragraph',
+    'blocks present + Body Text content, no headingField configured: contentField renders the Body Text paragraph',
     '<p>Just a paragraph.</p>',
-    $blocksPresentWithLeftoverNoHeading['body'] ?? null,
+    $blocksPresentWithBodyTextNoHeading['body'] ?? null,
 );
 
 // (c) blocks absent (pre-§7.1 behaviour, unchanged) → normal H1 extraction: the
@@ -625,7 +625,7 @@ check(
 );
 
 $contentWarnings = callPrivate($importService, '_buildBlockOwnershipWarnings', [true, false, 0, 'articleContent', 'headline', 'contentBlocks', false]);
-check('contentField previously non-empty, cleared (no leftover content) → exactly one warning', 1, count($contentWarnings));
+check('contentField previously non-empty, cleared (no Body Text content) → exactly one warning', 1, count($contentWarnings));
 check(
     'contentField warning (cleared) names the handle and says "clearing"',
     "Blocks now own this page — clearing previously non-empty 'articleContent' field.",
@@ -633,10 +633,10 @@ check(
 );
 
 $contentReplacedWarnings = callPrivate($importService, '_buildBlockOwnershipWarnings', [true, false, 0, 'articleContent', 'headline', 'contentBlocks', true]);
-check('contentField previously non-empty, replaced with leftover content → exactly one warning', 1, count($contentReplacedWarnings));
+check('contentField previously non-empty, replaced with Body Text content → exactly one warning', 1, count($contentReplacedWarnings));
 check(
-    'contentField warning (replaced with leftover) names the handle and says "replacing", not "clearing"',
-    "Blocks now own this page — replacing previously non-empty 'articleContent' field with leftover (unmarked) content.",
+    'contentField warning (replaced with Body Text) names the handle and says "replacing", not "clearing"',
+    "Blocks now own this page — replacing previously non-empty 'articleContent' field with Body Text content.",
     $contentReplacedWarnings[0] ?? null,
 );
 
@@ -648,10 +648,10 @@ check(
     $headingWarnings[0] ?? null,
 );
 
-// headingField wording is unaffected by $contentReplacedWithLeftover — blocks
-// always own the heading, whether or not there's leftover content.
-$headingWarningsWithLeftover = callPrivate($importService, '_buildBlockOwnershipWarnings', [false, true, 0, 'articleContent', 'headline', 'contentBlocks', true]);
-check('headingField warning wording unaffected by $contentReplacedWithLeftover', $headingWarnings, $headingWarningsWithLeftover);
+// headingField wording is unaffected by $contentReplacedWithBodyText — blocks
+// always own the heading, whether or not there's Body Text content.
+$headingWarningsWithBodyText = callPrivate($importService, '_buildBlockOwnershipWarnings', [false, true, 0, 'articleContent', 'headline', 'contentBlocks', true]);
+check('headingField warning wording unaffected by $contentReplacedWithBodyText', $headingWarnings, $headingWarningsWithBodyText);
 
 $matrixWarnings = callPrivate($importService, '_buildBlockOwnershipWarnings', [false, false, 3, 'articleContent', 'headline', 'contentBlocks', false]);
 check('matrix previously non-empty → exactly one warning', 1, count($matrixWarnings));
@@ -912,6 +912,43 @@ check(
     '',
     $nodesRenderer->renderDocument([
         ['type' => 'blockquote', 'content' => []],
+    ]),
+);
+
+// -----------------------------------------------------------------------------
+// NodesRenderer — horizontalRule is a ContentiQ layout aide and must NEVER
+// reach the CMS. The app now strips these at export, but renderDocument()
+// (the raw-ProseMirror collection-child path) skips them defensively too, for
+// older app payloads and legacy full-content syncs. render() (the flat
+// block-serialised path) has no 'horizontalRule' arm at all — it already
+// falls through to its default '' case, so it's covered here too as a
+// standing invariant, not because its code changed.
+// -----------------------------------------------------------------------------
+echo "\nNodesRenderer — horizontalRule is never rendered\n";
+
+check(
+    'renderDocument: standalone horizontalRule → empty string, not <hr>',
+    '',
+    $nodesRenderer->renderDocument([
+        ['type' => 'horizontalRule'],
+    ]),
+);
+
+check(
+    'renderDocument: horizontalRule between two paragraphs is skipped, paragraphs kept',
+    '<p>Before.</p><p>After.</p>',
+    $nodesRenderer->renderDocument([
+        ['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => 'Before.']]],
+        ['type' => 'horizontalRule'],
+        ['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => 'After.']]],
+    ]),
+);
+
+check(
+    'render() (flat blocks path): horizontalRule already falls through to empty string, unchanged',
+    '',
+    $nodesRenderer->render([
+        ['type' => 'horizontalRule'],
     ]),
 );
 

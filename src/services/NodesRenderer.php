@@ -71,8 +71,13 @@ class NodesRenderer extends Component
      * this consumes the raw `pages.content` ProseMirror AST carried by collection
      * children: a doc node (or bare content array) of block nodes. Handles the
      * node/mark types ContentIQ produces: paragraph, heading (h1–h6 via attrs.level),
-     * blockquote, bulletList, orderedList, listItem, hardBreak, horizontalRule, and
-     * the inline marks bold/italic/link (reusing the shared inline renderer).
+     * blockquote, bulletList, orderedList, listItem, hardBreak, and the inline
+     * marks bold/italic/link (reusing the shared inline renderer).
+     *
+     * `horizontalRule` nodes are deliberately NOT rendered — they're a
+     * ContentiQ layout aide, never CMS content (see _renderDocNode()). The app
+     * strips them at export now, but this is skipped defensively here too, for
+     * older app payloads and legacy full-content syncs.
      *
      * @param array|null $doc Raw ProseMirror doc ({type:'doc', content:[...]}) or its content array.
      * @return string
@@ -231,7 +236,13 @@ class NodesRenderer extends Component
             'bulletList'     => $this->_renderDocList($node, 'ul'),
             'orderedList'    => $this->_renderDocList($node, 'ol'),
             'listItem'       => '<li>' . $this->_renderListItem($node) . '</li>',
-            'horizontalRule' => '<hr>',
+            // horizontalRule nodes are a ContentiQ layout aide, not CMS
+            // content — they must never reach the CMS. The app strips them
+            // at export now, but this arm skips them defensively too, for
+            // older app payloads and legacy full-content syncs. Listed
+            // explicitly (rather than left to `default`) so the intent is
+            // visible next to the other node types.
+            'horizontalRule' => '',
             'hardBreak'      => '<br>',
             default          => '',
         };
