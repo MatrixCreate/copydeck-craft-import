@@ -153,6 +153,94 @@ check('static prefix extraction', 'blog/category', GlobalsTransforms::staticUriP
 check('leading token → empty prefix, no drift', false, GlobalsTransforms::urlPrefixDrifts('anything', '{slug}'));
 
 // -----------------------------------------------------------------------------
+// AssetFolderPath — the 'sitemap' assetFolderStrategy's folder-path derivation
+// (src/helpers/AssetFolderPath.php, added 1.25.0).
+//
+// sanitizeSegment() itself calls craft\helpers\Assets::prepareAssetName(),
+// which needs a booted Craft::$app (generalConfig->filenameWordSeparator) —
+// unavailable in this Craft-free harness. forDocument()/withSubfolder() take
+// an injectable $sanitizer callable for exactly this reason: a simple
+// stand-in here exercises the real joining/fallback/collision-adjacent logic
+// without touching Craft. A real Craft install's actual sanitised output
+// (spaces → hyphens, etc.) is NOT what's under test below — only that the
+// sanitizer is called once per segment, in order, and its output is joined/
+// nested/falls-back correctly.
+// -----------------------------------------------------------------------------
+echo "\nAssetFolderPath — folder path derivation (1.25.0)\n";
+
+require __DIR__ . '/../src/helpers/AssetFolderPath.php';
+
+use matrixcreate\contentiqimporter\helpers\AssetFolderPath;
+
+// Stand-in sanitizer: lowercase, spaces → hyphens — enough to prove segments
+// are actually routed through *a* sanitizer, without depending on Craft's own.
+$stubSanitizer = fn(string $s): string => strtolower(str_replace(' ', '-', trim($s)));
+
+check(
+    'nesting: three-level ancestor chain joins under the base',
+    'contentiq/windows/slimline/reynaers-sl38-window',
+    AssetFolderPath::forDocument(['Windows', 'Slimline', 'Reynaers SL38 Window'], 'contentiq', $stubSanitizer),
+);
+check(
+    'nesting: homepage (single segment)',
+    'contentiq/homepage',
+    AssetFolderPath::forDocument(['Homepage'], 'contentiq', $stubSanitizer),
+);
+check(
+    "base '' (volume root): no leading slash, no empty segment",
+    'case-studies/telegraph-road',
+    AssetFolderPath::forDocument(['Case Studies', 'Telegraph Road'], '', $stubSanitizer),
+);
+check(
+    "base 'contentiq': prefixes every path",
+    'contentiq/case-studies/telegraph-road',
+    AssetFolderPath::forDocument(['Case Studies', 'Telegraph Road'], 'contentiq', $stubSanitizer),
+);
+check(
+    'missing document.path → falls back to the flat base folder verbatim',
+    'contentiq',
+    AssetFolderPath::forDocument([], 'contentiq', $stubSanitizer),
+);
+check(
+    "missing document.path with '' base → falls back to '' (volume root)",
+    '',
+    AssetFolderPath::forDocument([], '', $stubSanitizer),
+);
+check(
+    'a segment that sanitizes to empty is dropped, not left as a stray slash',
+    'contentiq/windows',
+    AssetFolderPath::forDocument(['Windows', '   '], 'contentiq', fn(string $s) => trim($s) === '' ? '' : $stubSanitizer($s)),
+);
+
+// Folder sub-level — a ContentIQ per-page asset folder (assets[]/files[]
+// item's own `folder` key) nests one level under the already-resolved page path.
+check(
+    'folder sub-level nests under the page path',
+    'contentiq/homepage/product-category-grid',
+    AssetFolderPath::withSubfolder('contentiq/homepage', 'Product Category Grid', $stubSanitizer),
+);
+check(
+    'folder sub-level under a volume-root page path (no leading slash)',
+    'homepage/hero-images',
+    AssetFolderPath::withSubfolder('homepage', 'Hero Images', $stubSanitizer),
+);
+check(
+    'null folder is a no-op — item belongs directly in the page folder',
+    'contentiq/homepage',
+    AssetFolderPath::withSubfolder('contentiq/homepage', null, $stubSanitizer),
+);
+check(
+    'blank folder is a no-op',
+    'contentiq/homepage',
+    AssetFolderPath::withSubfolder('contentiq/homepage', '   ', $stubSanitizer),
+);
+check(
+    'a folder name that sanitizes to empty is a no-op',
+    'contentiq/homepage',
+    AssetFolderPath::withSubfolder('contentiq/homepage', 'Product Grid', fn(string $s) => ''),
+);
+
+// -----------------------------------------------------------------------------
 // content_types map — every row must have the keys _getContentTypesMap()
 // consumers rely on, with non-empty section/entryType/contentField.
 // headingField is genuinely optional (see blog_categories) so it is not
@@ -832,6 +920,291 @@ check(
     ($footerFieldValuesOff['footerCallToAction']['fields']['showGlobalCallToAction'] ?? null) === false,
 );
 check('OFF + both layers present → no warning', [], $footerResultH['warnings']);
+
+// -----------------------------------------------------------------------------
+// ImportService::_importPageAssets() — assets[]/files[] routing and tallying
+// (1.25.0). ContentiQ's wire contract already separates images (`assets[]`,
+// each item now also carrying `mime`) from non-images (`files[]`) — routing
+// to ImageImportService::importFromField() vs ::importFile() is decided by
+// which array an item came from, NOT by inspecting its `mime` (the array
+// split IS the mime routing — see docs/assets.md). Verified here against a
+// recording ImageImportService double (swapped into ContentIQImporter::$plugin
+// and restored afterwards, so the CTA/hero sections above/below keep using
+// their own $fakeImages/$fakePlugin), asserting the right method is called
+// for each array and that _tallyAssetResult()'s created/reused/relocated
+// counts land correctly off controlled return values.
+// -----------------------------------------------------------------------------
+echo "\nImportService — page assets[]/files[] routing (1.25.0)\n";
+
+$previousPlugin = \matrixcreate\contentiqimporter\ContentIQImporter::$plugin;
+
+$recordingImages = new class {
+    public array $calls = [];
+
+    public function importFromField($item, $dryRun = false, $folderPathOverride = null)
+    {
+        $this->calls[] = ['method' => 'importFromField', 'item' => $item, 'folder' => $folderPathOverride];
+
+        // A fresh download — created, never reused/relocated.
+        return ['id' => 1, 'filename' => $item['filename'] ?? 'a.jpg', 'reused' => false, 'relocated' => false];
+    }
+
+    public function importFile($item, $dryRun = false, $folderPathOverride = null)
+    {
+        $this->calls[] = ['method' => 'importFile', 'item' => $item, 'folder' => $folderPathOverride];
+
+        // A reused-and-relocated legacy-folder hit.
+        return ['id' => 2, 'filename' => $item['filename'] ?? 'b.pdf', 'reused' => true, 'relocated' => true];
+    }
+};
+
+$recordingPlugin = new class {
+    public $images;
+};
+$recordingPlugin->images = $recordingImages;
+\matrixcreate\contentiqimporter\ContentIQImporter::$plugin = $recordingPlugin;
+
+// Neither item carries a `folder` — a non-null one would route
+// _importPageAssets() through AssetFolderPath::withSubfolder()'s DEFAULT
+// (real) sanitizer, which calls craft\helpers\Assets::prepareAssetName() —
+// unavailable in this Craft-free harness (see the AssetFolderPath section
+// above; the flat-vs-sitemap folder-override test further down loads a
+// stand-in for that one real call). The per-item folder-nesting behaviour
+// itself is already covered there via the injectable $sanitizer; this
+// section is scoped to the array-origin routing decision. _importPageAssets()
+// now takes _preparePageAssetTargets()'s return shape, constructed by hand
+// here rather than resolved for real (that needs a live Craft volume).
+$pageAssetsData = [
+    'assets' => [
+        ['key' => 'k1', 'url' => 'https://example.com/a.jpg', 'filename' => 'a.jpg', 'mime' => 'image/jpeg', 'folder' => null],
+    ],
+    'files' => [
+        ['key' => 'k2', 'url' => 'https://example.com/b.pdf', 'filename' => 'b.pdf', 'mime' => 'application/pdf', 'folder' => null],
+    ],
+];
+$routingTargets = ['pageFolder' => 'contentiq/homepage', 'isSitemap' => false, 'documentsReady' => true, 'warnings' => []];
+
+$pageAssetsResult = callPrivate($importService, '_importPageAssets', [$pageAssetsData, $routingTargets, false]);
+
+check('assets[] item (mime image/jpeg) routes through importFromField', 'importFromField', $recordingImages->calls[0]['method'] ?? null);
+check('files[] item (mime application/pdf) routes through importFile', 'importFile', $recordingImages->calls[1]['method'] ?? null);
+check('assets[] item with no folder gets no folderPathOverride', null, $recordingImages->calls[0]['folder']);
+check('files[] item with no folder gets no folderPathOverride', null, $recordingImages->calls[1]['folder']);
+check('pageAssets tallies the fresh download as created', ['created' => 1, 'reused' => 0, 'relocated' => 0, 'failed' => 0], $pageAssetsResult['pageAssets']);
+check('pageFiles tallies the reused+relocated hit correctly', ['created' => 0, 'reused' => 1, 'relocated' => 1, 'failed' => 0], $pageAssetsResult['pageFiles']);
+check('no warnings for two well-formed items', [], $pageAssetsResult['warnings']);
+
+// -----------------------------------------------------------------------------
+// Per-item `folder` sub-level is gated on strategy — a non-null `folder` on
+// an assets[]/files[] item must be IGNORED under 'flat' (byte-identical
+// promise: no client site gets a surprise subfolder just from upgrading) and
+// APPLIED under 'sitemap'. The 'sitemap' case exercises
+// AssetFolderPath::withSubfolder()'s real (non-injected) sanitizer, so it
+// needs the stand-in craft\helpers\Assets loaded first.
+// -----------------------------------------------------------------------------
+echo "\nImportService — per-item folder override gated on assetFolderStrategy\n";
+
+$folderItemData = [
+    'assets' => [
+        ['key' => 'k5', 'url' => 'https://example.com/e.jpg', 'filename' => 'e.jpg', 'folder' => 'Product Grid'],
+    ],
+    'files' => [],
+];
+
+$recordingImages->calls = [];
+$flatTargets = ['pageFolder' => 'contentiq', 'isSitemap' => false, 'documentsReady' => true, 'warnings' => []];
+callPrivate($importService, '_importPageAssets', [$folderItemData, $flatTargets, false]);
+check(
+    "'flat' strategy: item's own folder is ignored — no folderPathOverride",
+    null,
+    $recordingImages->calls[0]['folder'],
+);
+
+require __DIR__ . '/fixtures/assets-helper-stub.php';
+
+$recordingImages->calls = [];
+$sitemapTargets = ['pageFolder' => 'contentiq/homepage', 'isSitemap' => true, 'documentsReady' => true, 'warnings' => []];
+callPrivate($importService, '_importPageAssets', [$folderItemData, $sitemapTargets, false]);
+check(
+    "'sitemap' strategy: item's own folder DOES produce a folderPathOverride",
+    'contentiq/homepage/product-grid',
+    $recordingImages->calls[0]['folder'],
+);
+
+// -----------------------------------------------------------------------------
+// A missing/misconfigured documentVolume must not fail the whole page — only
+// files[] is skipped (with a page-level warning); assets[] still imports.
+// Exercises _preparePageAssetTargets() directly (not just _importPageAssets()),
+// since that's where prepareDocuments()'s exception is caught.
+// -----------------------------------------------------------------------------
+echo "\nImportService — missing documentVolume degrades gracefully (does not fail the page)\n";
+
+$missingDocsImages = new class {
+    public array $importFromFieldCalls = [];
+
+    public function setAllowPrivateAssetUrls($allow)
+    {
+    }
+
+    public function prepare($volumeHandle, $folderPath, $dryRun = false, $relocate = false, $legacyFolderPath = null)
+    {
+    }
+
+    public function prepareDocuments($volumeHandle, $folderPath, $dryRun = false, $relocate = false, $legacyFolderPath = null)
+    {
+        throw new \Exception("Asset volume '{$volumeHandle}' not found. Check the 'documentVolume' key in config/contentiq.php.");
+    }
+
+    public function importFromField($item, $dryRun = false, $folderPathOverride = null)
+    {
+        $this->importFromFieldCalls[] = $item;
+
+        return ['id' => 1, 'filename' => $item['filename'] ?? 'x', 'reused' => false, 'relocated' => false];
+    }
+
+    public function importFile($item, $dryRun = false, $folderPathOverride = null)
+    {
+        // Must never be reached — files[] is skipped entirely when
+        // prepareDocuments() failed. A call here fails this test loudly
+        // (uncaught exception) rather than silently mis-tallying.
+        throw new \Exception('importFile() must not be called when documentsReady is false.');
+    }
+};
+
+$missingDocsPlugin = new class {
+    public $images;
+};
+$missingDocsPlugin->images = $missingDocsImages;
+\matrixcreate\contentiqimporter\ContentIQImporter::$plugin = $missingDocsPlugin;
+
+$configMissingDocs = [
+    'assetVolume'         => 'images',
+    'assetFolder'         => 'contentiq',
+    'assetFolderStrategy' => 'flat',
+    'documentVolume'      => 'documents',
+];
+$dataMissingDocs = [
+    'document' => ['path' => []],
+    'assets'   => [
+        ['key' => 'a1', 'url' => 'https://example.com/a1.jpg', 'filename' => 'a1.jpg'],
+    ],
+    'files' => [
+        ['key' => 'f1', 'url' => 'https://example.com/f1.pdf', 'filename' => 'f1.pdf'],
+        ['key' => 'f2', 'url' => 'https://example.com/f2.pdf', 'filename' => 'f2.pdf'],
+    ],
+];
+
+$targetsMissingDocs = callPrivate($importService, '_preparePageAssetTargets', [$dataMissingDocs, $configMissingDocs, false]);
+
+check('missing documentVolume: documentsReady is false', false, $targetsMissingDocs['documentsReady']);
+check(
+    'missing documentVolume: page-level warning names the volume and file count',
+    "Documents volume 'documents' not found — 2 file(s) skipped. Check the 'documentVolume' key in config/contentiq.php.",
+    $targetsMissingDocs['warnings'][0] ?? null,
+);
+
+$resultMissingDocs = callPrivate($importService, '_importPageAssets', [$dataMissingDocs, $targetsMissingDocs, false]);
+
+check('missing documentVolume: assets[] still imports normally (1 created)', ['created' => 1, 'reused' => 0, 'relocated' => 0, 'failed' => 0], $resultMissingDocs['pageAssets']);
+check('missing documentVolume: pageFiles stays zeroed — files[] skipped', ['created' => 0, 'reused' => 0, 'relocated' => 0, 'failed' => 0], $resultMissingDocs['pageFiles']);
+check(
+    'missing documentVolume: the warning survives into _importPageAssets()\'s result',
+    true,
+    in_array("Documents volume 'documents' not found — 2 file(s) skipped. Check the 'documentVolume' key in config/contentiq.php.", $resultMissingDocs['warnings'], true),
+);
+
+\matrixcreate\contentiqimporter\ContentIQImporter::$plugin = $previousPlugin;
+
+// -----------------------------------------------------------------------------
+// ImageImportService — filename-match collision avoidance (real-data bug):
+// a Step B (or 'sitemap' legacy-fallback) filename match must be reused
+// ONLY when it isn't already claimed by a DIFFERENT ContentIQ key. Without
+// this, two independent ContentiQ assets sharing a filename (every page
+// having its own "hero.jpg" is the common shape ContentiQ actually sends)
+// collapsed onto one Craft element — each successive page's Step B reuse
+// (and, under 'sitemap', its relocation) stole the element out from under
+// every earlier page, silently emptying their own folders.
+//
+// _shouldReuseFilenameMatch() is the pure decision behind BOTH Step B call
+// sites in ImageImportService::_importAsset() (the expected-folder lookup
+// and the legacy-folder fallback — see the "both call sites share this one
+// method" check below), factored out specifically because the DB lookup
+// that feeds it (_isClaimedByKeyMapping(), craft\db\Query against
+// contentiq_asset_syncs) needs a live Craft install this Craft-free harness
+// doesn't have (see AGENTS.md's testing section) — so (a)/(b)/(c) below
+// cover the decision itself, not the SQL behind it.
+// -----------------------------------------------------------------------------
+echo "\nImageImportService — filename-match collision avoidance (Step B + legacy fallback)\n";
+
+require __DIR__ . '/../src/services/ImageImportService.php';
+
+$imageImportService = new \matrixcreate\contentiqimporter\services\ImageImportService();
+
+check(
+    '(a) filename match on an element mapped to another key → NOT reused (falls through to the download path)',
+    false,
+    callPrivate($imageImportService, '_shouldReuseFilenameMatch', [true]),
+);
+check(
+    '(b) filename match on an unmapped (unclaimed) element → reused',
+    true,
+    callPrivate($imageImportService, '_shouldReuseFilenameMatch', [false]),
+);
+
+$imageImportServiceSource = file_get_contents(__DIR__ . '/../src/services/ImageImportService.php');
+check(
+    '(c) the legacy-folder fallback shares the SAME guard as the expected-folder Step B lookup — exactly 2 call sites, not a diverged/duplicated copy',
+    2,
+    substr_count($imageImportServiceSource, '$this->_shouldReuseFilenameMatch('),
+);
+
+// -----------------------------------------------------------------------------
+// ImageImportService — Step A self-heal for a mapping shared by several keys
+// (real AA data: element 25's "HeroImage.jpg" was mapped by ~62 different
+// keys — every page's own hero image, collapsed onto one element by the
+// pre-fix Step B bug). Step A now treats the OLDEST contentiq_asset_syncs
+// row (lowest id) sharing an element as the rightful owner; every other
+// key's row is dropped and re-resolves as its own asset.
+//
+// _isOldestMappingOwner() is the pure decision — factored out for the same
+// reason as _shouldReuseFilenameMatch() above: the DB query that gathers
+// the sibling row ids (craft\db\Query against contentiq_asset_syncs) needs
+// a live Craft install this harness doesn't have. NOT covered here (and
+// not executable in this harness at all): the actual DELETE + fall-through
+// to Step B/download inside _importAsset()'s Step A block, the page-level
+// "shared a Craft asset with N other ContentiQ keys" warning text
+// end-to-end, and relocation running only for the surviving owner — all of
+// that needs Asset::find()/a live contentiq_asset_syncs table to exercise
+// for real; verified by code review instead (see docs/assets.md's Step A
+// self-heal paragraph for the reasoning this pure decision implements).
+// -----------------------------------------------------------------------------
+echo "\nImageImportService — Step A self-heal: oldest-mapping-row ownership\n";
+
+check(
+    'owner keeps: current row IS the oldest (lowest id) among all rows sharing the element',
+    true,
+    callPrivate($imageImportService, '_isOldestMappingOwner', [5, [5, 10, 20]]),
+);
+check(
+    'non-owner drops: current row is NOT the oldest — a different (lower-id) row owns the element',
+    false,
+    callPrivate($imageImportService, '_isOldestMappingOwner', [10, [5, 10, 20]]),
+);
+check(
+    'non-owner drops regardless of list order — order of $allRowIdsForElement must not matter',
+    false,
+    callPrivate($imageImportService, '_isOldestMappingOwner', [20, [20, 5, 10]]),
+);
+check(
+    'a row with no siblings (itself only) is trivially the owner',
+    true,
+    callPrivate($imageImportService, '_isOldestMappingOwner', [7, [7]]),
+);
+check(
+    'defensive default: an empty sibling list (should never happen — caller always includes the row itself) is treated as owner',
+    true,
+    callPrivate($imageImportService, '_isOldestMappingOwner', [7, []]),
+);
 
 // -----------------------------------------------------------------------------
 // NodesRenderer — blockquote support (Gap 1: flat nodes[] shape; Gap 2: raw

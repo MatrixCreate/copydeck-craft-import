@@ -65,6 +65,7 @@ Both `contentiqUrl`/`apiKey` and `collectionMappings` are saved through Craft's 
 - `blockOverrides` — replaces a block-type mapping from `src/config/defaults.php` entirely (not merged field-by-field). See [block-mapping.md](block-mapping.md).
 - `slugMap` — Craft slug → ContentiQ slug, used **only** by the sidebar widget's single-page fetch (`CpController::actionWidgetSync()` looks up `$slugMap[$slug] ?? $slug` before calling `/api/v1/pages/{slug}/export}` — `src/controllers/CpController.php:1128-1130`). It is not applied anywhere in Craft-side entry lookup (`ImportService::findExistingEntry()` never touches it) — this is a one-directional translation for outbound API calls only.
 - `preserveBlockIdentity` — off by default; rewrites the Matrix save path to reuse existing nested-block element ids instead of always creating new ones. This is entirely internal to Craft's own save behaviour, not part of the ContentiQ wire contract — see [block-mapping.md](block-mapping.md#diff-aware-matrix-writes-preserveblockidentity) and [import-pipeline.md](import-pipeline.md) for what it changes.
+- `assetFolderStrategy` (`'flat'` default | `'sitemap'`) and `documentVolume` (default `'documents'`) — since 1.25.0, control where page-level `assets[]`/`files[]` (and, under `'sitemap'`, every other image) get filed, and whether a drifted reuse gets relocated. See [assets.md](assets.md).
 
 ## When the API is unreachable or unconfigured
 

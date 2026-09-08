@@ -1005,6 +1005,13 @@ class MatrixBuilder extends Component
         if ($result !== null) {
             $imageReport[] = ['filename' => $result['filename'], 'reused' => $result['reused']];
 
+            // Item-level context (a Step A self-heal drop, or a relocation
+            // whose physical file wasn't found) — non-fatal, but must reach
+            // the page report, not just the Craft log.
+            if (!empty($result['warning'])) {
+                $this->_warnings[] = $result['warning'];
+            }
+
             return [$handle => $result['id'] !== null ? [$result['id']] : []];
         }
 
@@ -1042,6 +1049,11 @@ class MatrixBuilder extends Component
 
                 if ($result !== null) {
                     $imageReport[] = ['filename' => $result['filename'], 'reused' => $result['reused']];
+
+                    // See _handleImage() — same item-level context warning.
+                    if (!empty($result['warning'])) {
+                        $this->_warnings[] = $result['warning'];
+                    }
 
                     if ($result['id'] !== null) {
                         $ids[] = $result['id'];

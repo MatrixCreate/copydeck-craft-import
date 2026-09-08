@@ -188,6 +188,13 @@ class GlobalsImportService extends Component
             $report['imagesReused']++;
         }
 
+        // Item-level context (a Step A self-heal drop, or a relocation
+        // whose physical file wasn't found) — non-fatal, but must reach the
+        // globals report, not just the Craft log.
+        if (!empty($imageResult['warning'])) {
+            $report['warnings'][] = $imageResult['warning'];
+        }
+
         return $imageResult['id'] ?? null;
     }
 

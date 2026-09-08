@@ -10,6 +10,7 @@ use craft\fields\ContentBlock;
 use craft\helpers\Db;
 use craft\models\FieldLayout;
 use matrixcreate\contentiqimporter\ContentIQImporter;
+use matrixcreate\contentiqimporter\helpers\AssetFolderPath;
 use matrixcreate\contentiqimporter\helpers\LinkHelper;
 use Throwable;
 use yii\base\Component;
@@ -67,6 +68,8 @@ class ImportService extends Component
      *   seoFieldCount: int,
      *   blocks:        [{type, fields[], skipped}],
      *   images:        [{filename, reused}],
+     *   pageAssets:    {created: int, reused: int, relocated: int, failed: int},
+     *   pageFiles:     {created: int, reused: int, relocated: int, failed: int},
      *   warnings:      string[],
      *   error:         string|null,
      * }
@@ -149,12 +152,19 @@ class ImportService extends Component
             }
 
             // -----------------------------------------------------------------------
-            // 4. Prepare ImageImportService (resolves volume + folder once).
+            // 4. Prepare ImageImportService (resolves images + documents
+            //    volume/folder once) and file this page's assets[]/files[] —
+            //    independent of any Matrix/hero/SEO/card field, so it runs
+            //    even for a page whose blocks[] is empty/unmappable. Network
+            //    I/O like every other image step, so it runs before the DB
+            //    transaction further down.
             // -----------------------------------------------------------------------
-            $volumeHandle = $config['assetVolume'] ?? 'images';
-            $folderPath   = $config['assetFolder'] ?? 'contentiq';
+            $assetTargets = $this->_preparePageAssetTargets($data, $config, $dryRun);
 
-            ContentIQImporter::$plugin->images->prepare($volumeHandle, $folderPath);
+            $pageAssetsResult     = $this->_importPageAssets($data, $assetTargets, $dryRun);
+            $result['pageAssets'] = $pageAssetsResult['pageAssets'];
+            $result['pageFiles']  = $pageAssetsResult['pageFiles'];
+            $result['warnings']   = array_merge($result['warnings'], $pageAssetsResult['warnings']);
 
             // -----------------------------------------------------------------------
             // 5. Prepare MatrixBuilder (builds merged mapping once).
@@ -246,16 +256,16 @@ class ImportService extends Component
             $seoValues = [];
 
             if (!empty($data['seo'])) {
-                $seoValues    = $this->_resolveSeoFields($data['seo'], $config, $dryRun);
+                $seoValues    = $this->_resolveSeoFields($data['seo'], $config, $dryRun, $result);
                 $seoPopulated = array_filter($seoValues, fn($v) => $v !== '' && $v !== null && $v !== []);
                 $result['seoFieldCount'] = count($seoPopulated);
             }
 
-            $cardValues = $this->_resolveCardFields($data['document']['card'] ?? null, $dryRun);
+            $cardValues = $this->_resolveCardFields($data['document']['card'] ?? null, $dryRun, $result);
 
             // Both pages and homepage use the same hero ContentBlock field.
             $heroData = $heroBlock !== null
-                ? $this->_buildHeroField($heroBlock, $dryRun)
+                ? $this->_buildHeroField($heroBlock, $dryRun, result: $result)
                 : null;
 
             // -----------------------------------------------------------------------
@@ -739,6 +749,46 @@ class ImportService extends Component
         return $warningsByEntry;
     }
 
+    /**
+     * Files a locked page's `assets[]`/`files[]` without touching its entry
+     * content — the assets-only path every "skip because locked" branch
+     * (`SyncJob`, `CpController::actionRunImport()`, the CLI's `--force`
+     * gate) runs instead of skipping the page outright. Asset filing never
+     * mutates entry fields, so it's exempt from the lock's whole reason for
+     * existing (see AGENTS.md's "whole-page replace, locks are the editor's
+     * defence" principle — that principle is about content, not assets).
+     *
+     * Mirrors the page-asset step inside `importPage()`/
+     * `_importCollectionChild()`, but is the ONLY thing that runs for a
+     * locked page — no config/section/entry-type resolution beyond what
+     * `_preparePageAssetTargets()` itself needs. Wrapped in its own
+     * try/catch (same per-page error isolation as `importPage()`'s outer
+     * catch) — a failure here never escalates to a fatal result; it degrades
+     * to a warning and zeroed counts, same as the rest of the page's normal
+     * "locked" skip result.
+     *
+     * @param array $data   Decoded top-level JSON object for a single page.
+     * @param bool  $dryRun If true, reports would-be counts without downloading.
+     * @return array{pageAssets: array{created: int, reused: int, relocated: int, failed: int}, pageFiles: array{created: int, reused: int, relocated: int, failed: int}, warnings: string[]}
+     */
+    public function importPageAssetsOnly(array $data, bool $dryRun = false): array
+    {
+        try {
+            $config       = $this->_getConfig();
+            $assetTargets = $this->_preparePageAssetTargets($data, $config, $dryRun);
+
+            return $this->_importPageAssets($data, $assetTargets, $dryRun);
+        } catch (Throwable $e) {
+            Craft::error('ContentIQImporter: locked-entry asset filing failed: ' . $e->getMessage(), __METHOD__);
+
+            return [
+                'pageAssets' => $this->_emptyAssetCounts(),
+                'pageFiles'  => $this->_emptyAssetCounts(),
+                'warnings'   => ['Could not file page assets: ' . $e->getMessage()],
+            ];
+        }
+    }
+
     // Private Methods
     // =========================================================================
 
@@ -869,10 +919,16 @@ class ImportService extends Component
 
         $result['sectionLabel'] = $section->name ?: $contentType;
 
-        // Prepare image service (used by SEO og_image import).
-        $volumeHandle = $config['assetVolume'] ?? 'images';
-        $folderPath   = $config['assetFolder'] ?? 'contentiq';
-        ContentIQImporter::$plugin->images->prepare($volumeHandle, $folderPath);
+        // Prepare image service (used by SEO og_image import) and file this
+        // page's assets[]/files[] — see importPage()'s step 4 for the full
+        // rationale; identical here, just ahead of the collection-child's
+        // own dry-run early return further down.
+        $assetTargets = $this->_preparePageAssetTargets($data, $config, $dryRun);
+
+        $pageAssetsResult     = $this->_importPageAssets($data, $assetTargets, $dryRun);
+        $result['pageAssets'] = $pageAssetsResult['pageAssets'];
+        $result['pageFiles']  = $pageAssetsResult['pageFiles'];
+        $result['warnings']   = array_merge($result['warnings'], $pageAssetsResult['warnings']);
 
         // ContentIQ is transitioning collection children from a raw `content`
         // ProseMirror document to structured `blocks[]`. Current wire contract
@@ -928,7 +984,7 @@ class ImportService extends Component
 
         // SEO is only present for portal-on collections — set it only when supplied.
         if (!empty($data['seo'])) {
-            $fieldValues = array_merge($fieldValues, $this->_resolveSeoFields($data['seo'], $config, $dryRun));
+            $fieldValues = array_merge($fieldValues, $this->_resolveSeoFields($data['seo'], $config, $dryRun, $result));
         }
 
         // Find existing entry — delegates to findExistingEntry(), the single
@@ -1077,7 +1133,25 @@ class ImportService extends Component
             'skipped'       => false,
             'contentType'   => null,
             'sectionLabel'  => null,
+            // Page-level assets[]/files[] filing counts — see
+            // _importPageAssets()/importPageAssetsOnly(). Untouched by any
+            // Matrix/hero/SEO/card image field.
+            'pageAssets'    => $this->_emptyAssetCounts(),
+            'pageFiles'     => $this->_emptyAssetCounts(),
         ];
+    }
+
+    /**
+     * Returns a zeroed created/reused/relocated/failed count quadruple —
+     * the shape of both `pageAssets` and `pageFiles` on a result array.
+     * `failed` exists so a payload item that couldn't be imported is always
+     * visible in the total, never just silently absent from it.
+     *
+     * @return array{created: int, reused: int, relocated: int, failed: int}
+     */
+    private function _emptyAssetCounts(): array
+    {
+        return ['created' => 0, 'reused' => 0, 'relocated' => 0, 'failed' => 0];
     }
 
     /**
@@ -1114,6 +1188,26 @@ class ImportService extends Component
             'entryType'      => 'pages',
             'assetVolume'    => 'images',
             'assetFolder'    => 'contentiq',
+            // 'flat' (default) is today's behaviour, byte-identical — every
+            // page's images/files land in the single 'assetFolder' folder.
+            // 'sitemap' files each page's assets/files under a folder path
+            // mirroring document.path (ancestor titles), with relocation of
+            // drifted reuses and a legacy-folder Step B fallback. See
+            // AssetFolderPath and docs/assets.md.
+            'assetFolderStrategy' => 'flat',
+            // Volume for files[] items (non-image assets, e.g. PDFs) — see
+            // ImageImportService::importFile()/prepareDocuments(). Only
+            // resolved (and only throws if misconfigured) when a page
+            // actually carries files[].
+            'documentVolume' => 'documents',
+            // Dev-only bypass of the SSRF public-host refusal on asset
+            // downloads (ImageImportService::_download()) — for a local
+            // ContentiQ instance on a loopback-resolving dev domain (e.g.
+            // contentiq.test → 127.0.0.1). Only ever takes effect when
+            // Craft::$app->getConfig()->getGeneral()->devMode is ALSO true —
+            // inert in production even if left on by accident. See
+            // docs/assets.md.
+            'allowPrivateAssetUrls' => false,
             'matrixField'    => 'contentBlocks',
             'seoField'       => 'seo',
             'blockOverrides' => [],
@@ -1143,18 +1237,283 @@ class ImportService extends Component
     }
 
     /**
+     * Resolves this page's images/documents targets and calls
+     * `ImageImportService::prepare()`/`prepareDocuments()` — the shared setup
+     * behind step 4 of `importPage()`, `_importCollectionChild()`, and the
+     * locked-entry assets-only path (`importPageAssetsOnly()`).
+     *
+     * Under `assetFolderStrategy: 'flat'` (default) this is byte-identical to
+     * the plugin's pre-1.25.0 behaviour: images always resolve to the
+     * configured `assetFolder` base, no relocation, no legacy fallback.
+     * Under `'sitemap'`, the folder is derived from `document.path` (via
+     * `AssetFolderPath::forDocument()`) with `assetFolder` as its base — a
+     * missing/empty `document.path` (older ContentiQ, or a page ContentiQ
+     * couldn't place) falls back to that same flat base folder. Documents
+     * (`prepareDocuments()`) are only resolved when the page actually carries
+     * `files[]` — a project with no `documentVolume` configured (or no such
+     * volume in Craft) never has it called.
+     *
+     * `$dryRun` is threaded straight into `prepare()`/`prepareDocuments()` —
+     * a dry run (CLI `--dry-run`, the CP upload Preview screen, which never
+     * even reaches a lock check) must resolve read-only (`findFolder()`,
+     * never `ensureFolderByFullPathAndVolume()`), or previewing a sitemap
+     * project creates its entire per-page VolumeFolder tree just from
+     * clicking Preview.
+     *
+     * A missing/misconfigured `documentVolume` is caught here, not left to
+     * propagate — it means this one page's `files[]` can't be filed, not
+     * that the whole page import should fail. `documentsReady` in the
+     * returned array tells `_importPageAssets()` to skip the `files[]` loop
+     * entirely; the caught exception's message becomes a page-level warning.
+     *
+     * @param array $data   Decoded top-level JSON object for a single page.
+     * @param array $config Merged contentiq config.
+     * @param bool  $dryRun If true, resolves folders read-only — no folder records created.
+     * @return array{pageFolder: string, isSitemap: bool, documentsReady: bool, warnings: string[]}
+     */
+    private function _preparePageAssetTargets(array $data, array $config, bool $dryRun): array
+    {
+        $isSitemap  = ($config['assetFolderStrategy'] ?? 'flat') === 'sitemap';
+        $baseFolder = $config['assetFolder'] ?? 'contentiq';
+        $documentPath = $data['document']['path'] ?? null;
+
+        $pageFolder = ($isSitemap && is_array($documentPath) && !empty($documentPath))
+            ? AssetFolderPath::forDocument($documentPath, $baseFolder)
+            : $baseFolder;
+
+        // Dev-only SSRF-refusal bypass — ImageImportService re-checks
+        // Craft's own devMode itself before ever honouring this, so passing
+        // the raw config value through unconditionally here is safe even in
+        // production (see ImageImportService::_privateUrlBypassActive()).
+        ContentIQImporter::$plugin->images->setAllowPrivateAssetUrls((bool)($config['allowPrivateAssetUrls'] ?? false));
+
+        $volumeHandle = $config['assetVolume'] ?? 'images';
+
+        ContentIQImporter::$plugin->images->prepare(
+            $volumeHandle,
+            $pageFolder,
+            $dryRun,
+            relocate: $isSitemap,
+            legacyFolderPath: $isSitemap ? $baseFolder : null,
+        );
+
+        $documentsReady = false;
+        $warnings       = [];
+        $files          = $data['files'] ?? [];
+
+        if (!empty($files)) {
+            $documentVolumeHandle = $config['documentVolume'] ?? 'documents';
+
+            try {
+                ContentIQImporter::$plugin->images->prepareDocuments(
+                    $documentVolumeHandle,
+                    $pageFolder,
+                    $dryRun,
+                    relocate: $isSitemap,
+                    legacyFolderPath: $isSitemap ? $baseFolder : null,
+                );
+                $documentsReady = true;
+            } catch (Throwable $e) {
+                $fileCount = is_array($files) ? count($files) : 0;
+                $warnings[] = "Documents volume '{$documentVolumeHandle}' not found — {$fileCount} file(s) skipped. Check the 'documentVolume' key in config/contentiq.php.";
+                Craft::warning("ContentIQImporter: documents volume '{$documentVolumeHandle}' not found — page files skipped: " . $e->getMessage(), __METHOD__);
+            }
+        }
+
+        return [
+            'pageFolder'     => $pageFolder,
+            'isSitemap'      => $isSitemap,
+            'documentsReady' => $documentsReady,
+            'warnings'       => $warnings,
+        ];
+    }
+
+    /**
+     * Files a page's `assets[]` (images, ContentIQ's per-page asset export)
+     * and `files[]` (non-images, e.g. PDFs) through `ImageImportService`,
+     * independent of any Matrix/hero/SEO/card field — nothing here is
+     * attached to an entry field, it only creates/reuses/relocates Craft
+     * assets and upserts their key mapping (idempotent, like every other
+     * image import path).
+     *
+     * Called by `importPage()`/`_importCollectionChild()` (after
+     * `_preparePageAssetTargets()`, before the DB transaction — this is
+     * network I/O, same as the existing block/hero/SEO image steps) and by
+     * `importPageAssetsOnly()` for a locked entry. Under `assetFolderStrategy:
+     * 'sitemap'` ONLY, a per-item `folder` value (a ContentIQ per-page asset
+     * folder) adds one more level under the page folder — under `'flat'` an
+     * item's `folder` is ignored so every other client site stays
+     * byte-identical to pre-1.25.0 behaviour, not one folder deeper than
+     * `assetFolder`. `files[]` is skipped entirely when `$targets['documentsReady']`
+     * is false (a misconfigured `documentVolume` — see `_preparePageAssetTargets()`,
+     * whose warning is already folded into the returned `warnings`).
+     *
+     * A single bad item (missing `url`, or a download failure) is skipped
+     * with a warning and does not fail the rest of the page — same
+     * per-item error isolation as `MatrixBuilder::_handleImages()`.
+     *
+     * @param array $data    Decoded top-level JSON object for a single page.
+     * @param array $targets `_preparePageAssetTargets()`'s return value.
+     * @param bool  $dryRun  If true, reports would-be counts without downloading.
+     * A `null` return from `importFromField()`/`importFile()` (a download
+     * failure, an unrecognisable item, etc. — see `ImageImportService`) is
+     * tallied into `failed` and warned about here too, not just a thrown
+     * exception — otherwise a payload item simply vanishes from the count
+     * with nothing to explain the gap between what ContentiQ sent and what
+     * actually landed in Craft.
+     *
+     * @return array{pageAssets: array{created: int, reused: int, relocated: int, failed: int}, pageFiles: array{created: int, reused: int, relocated: int, failed: int}, warnings: string[]}
+     */
+    private function _importPageAssets(array $data, array $targets, bool $dryRun): array
+    {
+        $images = ContentIQImporter::$plugin->images;
+
+        $pageFolder     = $targets['pageFolder'];
+        $isSitemap      = $targets['isSitemap'];
+        $documentsReady = $targets['documentsReady'];
+
+        $pageAssets = $this->_emptyAssetCounts();
+        $pageFiles  = $this->_emptyAssetCounts();
+        $warnings   = $targets['warnings'];
+
+        foreach ($data['assets'] ?? [] as $asset) {
+            if (!is_array($asset) || empty($asset['url'])) {
+                $pageAssets['failed']++;
+                $warnings[] = 'Could not import page asset "' . $this->_pageAssetItemLabel($asset) . '" — missing or invalid "url".';
+                continue;
+            }
+
+            try {
+                $folderOverride = ($isSitemap && !empty($asset['folder']))
+                    ? AssetFolderPath::withSubfolder($pageFolder, (string)$asset['folder'])
+                    : null;
+
+                $result = $images->importFromField($asset, $dryRun, folderPathOverride: $folderOverride);
+
+                if ($result !== null) {
+                    $this->_tallyAssetResult($pageAssets, $result);
+
+                    // A non-fatal, item-level context warning (a Step A
+                    // self-heal drop, or a relocation whose physical file
+                    // wasn't found) — the item still resolved successfully,
+                    // this just explains something noteworthy about how.
+                    if (!empty($result['warning'])) {
+                        $warnings[] = $result['warning'];
+                    }
+                } else {
+                    $pageAssets['failed']++;
+                    $warnings[] = 'Could not import page asset "' . $this->_pageAssetItemLabel($asset) . '" — see the Craft log for details.';
+                }
+            } catch (Throwable $e) {
+                $pageAssets['failed']++;
+                $warnings[] = 'Could not import page asset "' . $this->_pageAssetItemLabel($asset) . '": ' . $e->getMessage();
+                Craft::warning('ContentIQImporter: page asset import failed: ' . $e->getMessage(), __METHOD__);
+            }
+        }
+
+        if ($documentsReady) {
+            foreach ($data['files'] ?? [] as $file) {
+                if (!is_array($file) || empty($file['url'])) {
+                    $pageFiles['failed']++;
+                    $warnings[] = 'Could not import page file "' . $this->_pageAssetItemLabel($file) . '" — missing or invalid "url".';
+                    continue;
+                }
+
+                try {
+                    $folderOverride = ($isSitemap && !empty($file['folder']))
+                        ? AssetFolderPath::withSubfolder($pageFolder, (string)$file['folder'])
+                        : null;
+
+                    $result = $images->importFile($file, $dryRun, folderPathOverride: $folderOverride);
+
+                    if ($result !== null) {
+                        $this->_tallyAssetResult($pageFiles, $result);
+
+                        // See the assets[] loop above — same non-fatal
+                        // item-level context warning.
+                        if (!empty($result['warning'])) {
+                            $warnings[] = $result['warning'];
+                        }
+                    } else {
+                        $pageFiles['failed']++;
+                        $warnings[] = 'Could not import page file "' . $this->_pageAssetItemLabel($file) . '" — see the Craft log for details.';
+                    }
+                } catch (Throwable $e) {
+                    $pageFiles['failed']++;
+                    $warnings[] = 'Could not import page file "' . $this->_pageAssetItemLabel($file) . '": ' . $e->getMessage();
+                    Craft::warning('ContentIQImporter: page file import failed: ' . $e->getMessage(), __METHOD__);
+                }
+            }
+        }
+
+        return ['pageAssets' => $pageAssets, 'pageFiles' => $pageFiles, 'warnings' => $warnings];
+    }
+
+    /**
+     * A human-readable label for a page asset/file item in a warning message
+     * — prefers the ContentIQ `key` (stable, unique), falls back to
+     * `filename`, then `'unknown'` for a genuinely malformed item.
+     *
+     * @param mixed $item Expected to be the raw wire item array; tolerant of
+     *                    a malformed non-array value (the "not an array"
+     *                    case that reaches this via _importPageAssets()'s
+     *                    own guard).
+     * @return string
+     */
+    private function _pageAssetItemLabel(mixed $item): string
+    {
+        if (!is_array($item)) {
+            return 'unknown';
+        }
+
+        return (string)($item['key'] ?? $item['filename'] ?? 'unknown');
+    }
+
+    /**
+     * Tallies one `ImageImportService::importFromField()`/`importFile()`
+     * result into a created/reused/relocated/failed count quadruple.
+     * `relocated` is a diagnostic subset of `reused` (a fresh download is
+     * never relocated — it's already saved directly into the target
+     * folder), not a mutually-exclusive bucket, so `created + reused` is
+     * always the total successfully-resolved item count. `failed` is
+     * incremented by the caller, not here — this is only ever called with a
+     * non-null (i.e. successful) result.
+     *
+     * @param array{created: int, reused: int, relocated: int, failed: int} &$counts
+     * @param array{id: int|null, filename: string, reused: bool, relocated: bool} $result
+     * @return void
+     */
+    private function _tallyAssetResult(array &$counts, array $result): void
+    {
+        if (!empty($result['reused'])) {
+            $counts['reused']++;
+
+            if (!empty($result['relocated'])) {
+                $counts['relocated']++;
+            }
+
+            return;
+        }
+
+        $counts['created']++;
+    }
+
+    /**
      * Resolves ContentIQ SEO data into a SEOmatic SeoSettings field value array.
      *
      * SEOmatic stores all SEO data in a single field (handle: 'seo') as a
      * structured array. String values go in metaGlobalVars; source flags and
      * asset IDs go in metaBundleSettings.
      *
-     * @param array $seo    The seo object from the ContentIQ JSON.
-     * @param array $config Merged contentiq config.
+     * @param array $seo     The seo object from the ContentIQ JSON.
+     * @param array $config  Merged contentiq config.
      * @param bool  $dryRun
+     * @param array &$result Result array, mutated to add a warning if the
+     *                       og_image import carries one (see
+     *                       ImageImportService's `warning` result key).
      * @return array<string, mixed>
      */
-    private function _resolveSeoFields(array $seo, array $config, bool $dryRun): array
+    private function _resolveSeoFields(array $seo, array $config, bool $dryRun, array &$result): array
     {
         $fieldHandle = $config['seoField'] ?? 'seo';
 
@@ -1175,6 +1534,14 @@ class ImportService extends Component
         $ogImageData = $seo['og_image'] ?? null;
         if (is_array($ogImageData) && !empty($ogImageData['url'])) {
             $imageResult = ContentIQImporter::$plugin->images->importFromField($ogImageData, $dryRun);
+
+            // Item-level context (a Step A self-heal drop, or a relocation
+            // whose physical file wasn't found) — non-fatal, but must reach
+            // the page report, not just the Craft log.
+            if (!empty($imageResult['warning'])) {
+                $result['warnings'][] = $imageResult['warning'];
+            }
+
             if ($imageResult !== null && $imageResult['id'] !== null) {
                 $metaBundleSettings['seoImageSource'] = 'fromAsset';
                 $metaBundleSettings['seoImageIds']    = [$imageResult['id']];
@@ -1203,9 +1570,12 @@ class ImportService extends Component
      *
      * @param array|null $card    The card object from document.card, or null if absent.
      * @param bool       $dryRun
+     * @param array      &$result Result array, mutated to add a warning if the
+     *                            card image import carries one (see
+     *                            ImageImportService's `warning` result key).
      * @return array<string, mixed>
      */
-    private function _resolveCardFields(?array $card, bool $dryRun): array
+    private function _resolveCardFields(?array $card, bool $dryRun, array &$result): array
     {
         // Card is absent or null — skip writing any card fields.
         if ($card === null || !is_array($card)) {
@@ -1222,6 +1592,14 @@ class ImportService extends Component
         $imageData = $card['image'] ?? null;
         if (is_array($imageData) && !empty($imageData['url'])) {
             $imageResult = ContentIQImporter::$plugin->images->importFromField($imageData, $dryRun);
+
+            // Item-level context (a Step A self-heal drop, or a relocation
+            // whose physical file wasn't found) — non-fatal, but must reach
+            // the page report, not just the Craft log.
+            if (!empty($imageResult['warning'])) {
+                $result['warnings'][] = $imageResult['warning'];
+            }
+
             $cardValues['cardImage'] = ($imageResult !== null && $imageResult['id'] !== null)
                 ? [$imageResult['id']]
                 : [];
@@ -1319,9 +1697,14 @@ class ImportService extends Component
      * @param bool             $dryRun
      * @param FieldLayout|null $targetFieldLayout The destination entry type's field layout.
      *                                             Null falls back to the ContentBlock shape.
+     * @param array            &$result           Result array, mutated to add a warning if a
+     *                                             hero image import carries one. Defaults to a
+     *                                             throwaway array so existing 3-arg callers
+     *                                             (e.g. tests/run-transforms.php's shape probes)
+     *                                             keep working unchanged.
      * @return array<string, mixed>|null
      */
-    private function _buildHeroField(array $heroBlock, bool $dryRun, ?FieldLayout $targetFieldLayout = null): ?array
+    private function _buildHeroField(array $heroBlock, bool $dryRun, ?FieldLayout $targetFieldLayout = null, array &$result = []): ?array
     {
         // The 'hero' ContentBlock field has its own (nested) field layout, distinct
         // from $targetFieldLayout (the page/homepage entry type's layout). heroStyle
@@ -1332,7 +1715,7 @@ class ImportService extends Component
             ? $heroContentBlockField->getFieldLayout()
             : null;
 
-        $innerFields = $this->_buildHeroInnerFields($heroBlock, $dryRun, $heroInnerLayout);
+        $innerFields = $this->_buildHeroInnerFields($heroBlock, $dryRun, $heroInnerLayout, $result);
 
         if (empty($innerFields)) {
             return null;
@@ -1395,9 +1778,14 @@ class ImportService extends Component
      * @param FieldLayout|null $heroInnerLayout The 'hero' ContentBlock field's own
      *                                          (nested) field layout. Null skips the
      *                                          heroStyle guard (assume present).
+     * @param array            &$result        Result array, mutated to add a warning if the
+     *                                         desktop/mobile image import carries one. Defaults
+     *                                         to a throwaway array so existing 3-arg callers
+     *                                         (e.g. tests/run-transforms.php's shape probes)
+     *                                         keep working unchanged.
      * @return array Inner fields array (empty if nothing to set).
      */
-    private function _buildHeroInnerFields(array $heroBlock, bool $dryRun, ?FieldLayout $heroInnerLayout = null): array
+    private function _buildHeroInnerFields(array $heroBlock, bool $dryRun, ?FieldLayout $heroInnerLayout = null, array &$result = []): array
     {
         $fields      = $heroBlock['fields'] ?? [];
         $innerFields = [];
@@ -1444,6 +1832,14 @@ class ImportService extends Component
         // desktopImage — primary image.
         if (isset($fields['image']) && is_array($fields['image']) && !empty($fields['image']['url'])) {
             $imageResult = ContentIQImporter::$plugin->images->importFromField($fields['image'], $dryRun);
+
+            // Item-level context (a Step A self-heal drop, or a relocation
+            // whose physical file wasn't found) — non-fatal, but must reach
+            // the page report, not just the Craft log.
+            if (!empty($imageResult['warning'])) {
+                $result['warnings'][] = $imageResult['warning'];
+            }
+
             $innerFields['desktopImage'] = ($imageResult !== null && $imageResult['id'] !== null)
                 ? [$imageResult['id']]
                 : [];
@@ -1452,6 +1848,11 @@ class ImportService extends Component
         // mobileImage — optional mobile-specific hero image.
         if (isset($fields['mobile_image']) && is_array($fields['mobile_image']) && !empty($fields['mobile_image']['url'])) {
             $imageResult = ContentIQImporter::$plugin->images->importFromField($fields['mobile_image'], $dryRun);
+
+            if (!empty($imageResult['warning'])) {
+                $result['warnings'][] = $imageResult['warning'];
+            }
+
             $innerFields['mobileImage'] = ($imageResult !== null && $imageResult['id'] !== null)
                 ? [$imageResult['id']]
                 : [];
@@ -1998,6 +2399,14 @@ class ImportService extends Component
         $imageData = $fields['image'] ?? null;
         if (is_array($imageData) && !empty($imageData['url'])) {
             $imageResult = ContentIQImporter::$plugin->images->importFromField($imageData, $dryRun);
+
+            // Item-level context (a Step A self-heal drop, or a relocation
+            // whose physical file wasn't found) — non-fatal, but must reach
+            // the page report, not just the Craft log.
+            if (!empty($imageResult['warning'])) {
+                $result['warnings'][] = $imageResult['warning'];
+            }
+
             if ($imageResult !== null && $imageResult['id'] !== null) {
                 $ctaFieldValues['image'] = [$imageResult['id']];
                 $result['images'][] = ['filename' => $imageResult['filename'], 'reused' => $imageResult['reused']];
@@ -2008,6 +2417,11 @@ class ImportService extends Component
         $bgImageData = $fields['background_image'] ?? null;
         if (is_array($bgImageData) && !empty($bgImageData['url'])) {
             $bgResult = ContentIQImporter::$plugin->images->importFromField($bgImageData, $dryRun);
+
+            if (!empty($bgResult['warning'])) {
+                $result['warnings'][] = $bgResult['warning'];
+            }
+
             if ($bgResult !== null && $bgResult['id'] !== null) {
                 $ctaFieldValues['desktopBackgroundImage'] = [$bgResult['id']];
                 $result['images'][] = ['filename' => $bgResult['filename'], 'reused' => $bgResult['reused']];
@@ -2577,7 +2991,7 @@ class ImportService extends Component
         // caseStudy/team use a *flat* handle shape instead of the ContentBlock
         // shape on some sites (see _buildHeroField()'s shape probe).
         $heroData = $heroBlock !== null
-            ? $this->_buildHeroField($heroBlock, $dryRun, $targetFieldLayout)
+            ? $this->_buildHeroField($heroBlock, $dryRun, $targetFieldLayout, $result)
             : null;
 
         // Resolve CTA blocks — same routing as importPage() (see its step 10):

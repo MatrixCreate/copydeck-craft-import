@@ -113,7 +113,12 @@
                        run status. #}
                     {% set blockNotes = (page.blockNotes ?? '')|trim %}
                     {% set routingNotes = (page.routingNotes ?? '')|trim %}
-                    {% if (page.warnings ?? [])|length or page.error ?? null or blockNotes != '' or routingNotes != '' %}
+                    {# failed is folded into the totals (not just created+reused)
+                       so a payload item that failed with nothing else to report
+                       still renders this row instead of silently vanishing. #}
+                    {% set pageAssetsTotal = (page.pageAssets.created ?? 0) + (page.pageAssets.reused ?? 0) + (page.pageAssets.failed ?? 0) %}
+                    {% set pageFilesTotal = (page.pageFiles.created ?? 0) + (page.pageFiles.reused ?? 0) + (page.pageFiles.failed ?? 0) %}
+                    {% if (page.warnings ?? [])|length or page.error ?? null or blockNotes != '' or routingNotes != '' or pageAssetsTotal or pageFilesTotal %}
                         <tr>
                             <td colspan="6" style="padding-left:32px;">
                                 {% if page.error ?? null %}
@@ -131,6 +136,18 @@
                                     {% for note in routingNotes|split('\n\n') %}
                                         <div class="light">{{ note }}</div>
                                     {% endfor %}
+                                {% endif %}
+                                {# Page-level assets[]/files[] filing — independent of any
+                                   field, so it's reported separately from the Images
+                                   column (block/hero/SEO/card images only). Present on a
+                                   locked-skip row too — asset filing is exempt from the
+                                   lock, see ImportService::importPageAssetsOnly(). #}
+                                {% if pageAssetsTotal or pageFilesTotal %}
+                                    <div class="light">
+                                        {% if pageAssetsTotal %}{{ (page.pageAssets.created ?? 0) }} new page asset{{ (page.pageAssets.created ?? 0) == 1 ? '' : 's' }}, {{ (page.pageAssets.reused ?? 0) }} reused ({{ (page.pageAssets.relocated ?? 0) }} relocated){% if page.pageAssets.failed ?? 0 %}, <span style="color:var(--warning-color);">{{ page.pageAssets.failed }} failed</span>{% endif %}{% endif %}
+                                        {%- if pageAssetsTotal and pageFilesTotal %} &middot; {% endif -%}
+                                        {% if pageFilesTotal %}{{ (page.pageFiles.created ?? 0) }} new page file{{ (page.pageFiles.created ?? 0) == 1 ? '' : 's' }}, {{ (page.pageFiles.reused ?? 0) }} reused ({{ (page.pageFiles.relocated ?? 0) }} relocated){% if page.pageFiles.failed ?? 0 %}, <span style="color:var(--warning-color);">{{ page.pageFiles.failed }} failed</span>{% endif %}{% endif %}
+                                    </div>
                                 {% endif %}
                             </td>
                         </tr>

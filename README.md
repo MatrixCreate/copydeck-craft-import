@@ -26,12 +26,17 @@ Add `config/contentiq.php` to your Craft project:
 
 ```php
 return [
-    'section'     => 'pages',       // Entry section handle
-    'entryType'   => 'pages',       // Entry type handle
-    'assetVolume' => 'images',      // Asset volume for imported images
-    'assetFolder' => 'contentiq',   // Folder within the volume
-    'matrixField' => 'contentBlocks',
-    'seoField'    => 'seo',
+    'section'             => 'pages',       // Entry section handle
+    'entryType'           => 'pages',       // Entry type handle
+    'assetVolume'         => 'images',      // Asset volume for imported images
+    'assetFolder'         => 'contentiq',   // Folder within the volume
+    'assetFolderStrategy' => 'flat',        // 'flat' (default) | 'sitemap' — see docs/assets.md
+    'documentVolume'      => 'documents',   // Volume for non-image files[] (e.g. PDFs)
+    // 'allowPrivateAssetUrls' => true,     // LOCAL DEV ONLY — bypasses the SSRF guard for a
+                                             // loopback-resolving dev domain; inert unless devMode
+                                             // is also true. See docs/assets.md.
+    'matrixField'         => 'contentBlocks',
+    'seoField'            => 'seo',
 ];
 ```
 

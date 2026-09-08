@@ -62,6 +62,7 @@
                             <div class="light" style="font-size:12px; margin-top:2px;">{{ note }}</div>
                         {% endfor %}
                     {% endif %}
+                    {{ _self.pageAssetsLine(page) }}
                 </td>
                 <td><code style="font-size:12px;">{{ page.slug ?? '?' }}</code></td>
                 <td>
@@ -105,6 +106,36 @@
             {% endif %}
         {% endif %}
     {% endfor %}
+{% endmacro %}
+
+{# Muted "N assets, N files" line for a page row — page.pageAssets/pageFiles
+   ({created, reused, relocated}, see ImportService::_importPageAssets()) is
+   present on every result row, including a locked-skip row (asset filing is
+   exempt from the lock — see ImportService::importPageAssetsOnly()), so this
+   is the only place a locked page's real asset activity is visible. Renders
+   nothing when both counts are zero. #}
+{# assetsFailed/filesFailed are folded into the "trigger" check (not just
+   the created/reused total) so a payload item that failed with nothing else
+   to report still produces a visible line — the bug this line exists to
+   prevent is a count silently missing with no explanation. #}
+{% macro pageAssetsLine(page) %}
+    {% set assetsCreated = page.pageAssets.created ?? 0 %}
+    {% set assetsReused = page.pageAssets.reused ?? 0 %}
+    {% set assetsRelocated = page.pageAssets.relocated ?? 0 %}
+    {% set assetsFailed = page.pageAssets.failed ?? 0 %}
+    {% set filesCreated = page.pageFiles.created ?? 0 %}
+    {% set filesReused = page.pageFiles.reused ?? 0 %}
+    {% set filesRelocated = page.pageFiles.relocated ?? 0 %}
+    {% set filesFailed = page.pageFiles.failed ?? 0 %}
+    {% set assetsTotal = assetsCreated + assetsReused + assetsFailed %}
+    {% set filesTotal = filesCreated + filesReused + filesFailed %}
+    {% if assetsTotal or filesTotal %}
+        <div class="light" style="font-size:12px; margin-top:2px;">
+            {% if assetsTotal %}{{ assetsCreated }} new asset{{ assetsCreated == 1 ? '' : 's' }}, {{ assetsReused }} reused ({{ assetsRelocated }} relocated){% if assetsFailed %}, <span style="color:var(--warning-color);">{{ assetsFailed }} failed</span>{% endif %}{% endif %}
+            {%- if assetsTotal and filesTotal %} &middot; {% endif -%}
+            {% if filesTotal %}{{ filesCreated }} new file{{ filesCreated == 1 ? '' : 's' }}, {{ filesReused }} reused ({{ filesRelocated }} relocated){% if filesFailed %}, <span style="color:var(--warning-color);">{{ filesFailed }} failed</span>{% endif %}{% endif %}
+        </div>
+    {% endif %}
 {% endmacro %}
 
 {# Flat row rendering for a collection pane — collection entries never have
@@ -174,6 +205,7 @@
                         <div class="light" style="font-size:12px; margin-top:2px;">{{ note }}</div>
                     {% endfor %}
                 {% endif %}
+                {{ _self.pageAssetsLine(page) }}
             </td>
             <td><code style="font-size:12px;">{{ page.slug ?? '?' }}</code></td>
             <td>

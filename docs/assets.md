@@ -3,27 +3,149 @@
 What this covers: how `ImageImportService` downloads a ContentiQ image
 reference and turns it into (or reuses) a Craft asset — the idempotency
 rules, the SSRF/temp-file safety net around the download, the CLI webroot
-quirk, and how the multi-image "custom" block field fits in.
+quirk, how the multi-image "custom" block field fits in, and the
+`assetFolderStrategy: 'sitemap'` folder-filing/relocation behaviour added
+in 1.25.0.
 
-Verified against code 2026-08-24.
+Verified against code 2026-09-08.
 
 ---
 
 ## Mental model
 
 Every image ContentiQ exports arrives as a small JSON object:
-`{ "key": "path/to/file.jpg", "url": "https://...", "alt": "..." }`. `key`
-is the upstream asset's stable storage path; `url` is a signed, rotating
-download link. `ImageImportService::importFromField()`
-(`src/services/ImageImportService.php`) is the single entry point every
-caller — `MatrixBuilder`, `GlobalsImportService`, `ImportService`'s hero/CTA
-handling — goes through to turn that object into a Craft asset ID. A caller
-must call `prepare($volumeHandle, $folderPath, $dryRun)` once per run before
-any `importFromField()` calls; it resolves and caches the target volume and
-folder.
+`{ "key": "path/to/file.jpg", "url": "https://...", "alt": "..." }` (block/
+hero/SEO/card images) — page-level `assets[]`/`files[]` items (below) carry
+a few more keys but the same `key`/`url` core. `key` is the upstream asset's
+stable storage path; `url` is a signed, rotating download link.
+`ImageImportService::importFromField()` (images) and `::importFile()`
+(non-images, `src/services/ImageImportService.php`) are the entry points
+every caller — `MatrixBuilder`, `GlobalsImportService`, `ImportService`'s
+hero/CTA/page-asset handling — goes through to turn that object into a
+Craft asset ID. A caller must call `prepare($volumeHandle, $folderPath, ...)`
+(images) and, only if it has files to import, `prepareDocuments(...)`
+once per run before any `importFromField()`/`importFile()` calls; each
+resolves and caches its own target volume and folder.
 
 Running the same import twice must **not** duplicate assets. Two
 independent idempotency checks make that true, tried in order.
+
+---
+
+## Page-level `assets[]`/`files[]` and the `'sitemap'` folder strategy
+
+Since 1.25.0, `ImportService::importPage()`/`_importCollectionChild()` file
+every page's exported `assets[]` (images) and `files[]` (non-images, e.g.
+PDFs) through `ImageImportService` as a step independent of any Matrix/hero/
+SEO/card field — see `ImportService::_importPageAssets()`. Nothing here
+attaches to an entry field; it only creates/reuses/relocates Craft assets
+and records their key mapping, same idempotency as every other image path.
+This runs for a locked entry too (`ImportService::importPageAssetsOnly()`) —
+asset filing never touches entry content, so it's exempt from the lock.
+
+**`assetFolderStrategy`** (`config/contentiq.php`) controls where a page's
+images/files land:
+
+- `'flat'` (default) — byte-identical to pre-1.25.0 behaviour. Every image
+  lands in the single configured `assetFolder` folder; no relocation, no
+  legacy-folder fallback.
+- `'sitemap'` — each page gets its own folder mirroring `document.path`
+  (the ancestor-title chain ContentiQ sends, already disambiguated
+  for same-title siblings), sanitised segment-by-segment with
+  `craft\helpers\Assets::prepareAssetName($segment, false)` — the exact
+  function the Craft CP itself runs when a user names a folder — and joined
+  under the `assetFolder` base (`src/helpers/AssetFolderPath.php`). A
+  missing/empty `document.path` (older ContentiQ, or a page ContentiQ
+  couldn't place) falls back to that same flat base folder. Block/hero/
+  card/SEO/CTA images land in the page folder automatically, because they
+  already go through `importFromField()` after `ImportService::_preparePageAssetTargets()`
+  has called `prepare()` with it — no separate wiring needed.
+  A `files[]` item goes to `documentVolume` (default `'documents'`) under the
+  SAME page folder path (only resolved when the page actually has `files[]`).
+  A misconfigured/missing `documentVolume` never fails the page — see
+  "A missing documents volume" below.
+
+**Per-item sub-folder** (`'sitemap'` only) — an `assets[]`/`files[]` item's
+own `folder` (a ContentiQ client-made, block-named per-page folder) adds one
+more level under the page folder (`{pagePath}/{Folder-Name}`), via
+`AssetFolderPath::withSubfolder()` and `importFromField()`/`importFile()`'s
+`$folderPathOverride` parameter. An item with no `folder` goes straight
+into the page folder — same as every block image. Under `'flat'` an item's
+`folder` is ignored outright (`ImportService::_importPageAssets()` gates the
+override on `$isSitemap`) — applying it there would put every other client
+site's uploads one folder deeper than `assetFolder` the moment they upgrade,
+which is exactly what "byte-identical" above promises won't happen.
+
+**A missing documents volume never fails the page.** If a page carries
+`files[]` but the configured `documentVolume` doesn't exist in Craft,
+`ImportService::_preparePageAssetTargets()` catches `ImageImportService::prepareDocuments()`'s
+exception, adds a page-level warning ("Documents volume 'x' not found — N
+file(s) skipped."), and tells `_importPageAssets()` to skip the `files[]`
+loop entirely for that page — `assets[]` (images) still import normally.
+
+**Relocation** (`'sitemap'` only) — after a Step A or Step B reuse, if the
+resolved asset's current folder differs from the freshly-computed target
+folder, `Craft::$app->getAssets()->moveAsset()` moves it there and the
+result is flagged `relocated`. This is deliberate on every sync (not just
+the first one after enabling `'sitemap'`) — it also self-heals any manual
+folder tidying a client does in Craft, and undoing that is an accepted
+trade-off. Never happens on a dry run, and never under `'flat'` (there the
+target folder never changes, so relocation would just be moving root-volume
+images into the configured `assetFolder` on a project that never asked for
+that). Because a Step B/legacy match claimed by another key is never
+reused (above), and Step A's self-heal above only relocates on behalf of a
+mapping's rightful owner, relocation only ever moves an element that was
+resolved as uniquely owned by the current key — it can no longer steal a
+different page's element out from under it just because they share a
+filename or a stale shared mapping.
+
+**A missing physical file at relocation time is a DB-only "success", and a
+visible warning, not silently swallowed.** `moveAsset()` → Craft's own
+`Asset::_relocateFile()` (a same-volume move) calls
+`craft\fs\Local::renameFile()`, which runs `@rename()` and never checks its
+return value — if the source file doesn't exist on disk (e.g. a local dev
+Craft install whose DB was restored from a snapshot but whose asset files
+were never synced down), the physical move silently no-ops while Craft's
+own save still succeeds and the DB `folderId` updates exactly as if it had
+really moved. There is no exception, no validation error — nothing this
+plugin could otherwise detect after the fact. `_relocateIfNeeded()` checks
+the source file's existence itself, BEFORE calling `moveAsset()`, and — if
+missing — still lets the DB-only move go ahead (it's still `relocated:
+true`; Craft's own definition of success is DB state, and that part is
+genuinely correct) but attaches a `warning` string surfaced on the page
+result, so the DB/disk mismatch is visible instead of indistinguishable
+from a real move. This `warning` (same for the Step A self-heal above) is
+wired through EVERY `importFromField()`/`importFile()` caller, not just the
+page-level `assets[]`/`files[]` step — hero desktop/mobile, SEO `og_image`,
+card image, CTA image/background, the Custom block's multi-image field,
+and globals (branding/office images, via `_countImage()`) all push a
+non-empty `warning` into their own result's `warnings` list.
+
+**Legacy-folder Step B fallback** (`'sitemap'` only) — an asset synced
+before the sitemap folder structure existed (or before this project's
+`assetFolderStrategy` was flipped to `'sitemap'`) still lives in the flat
+base folder, not the newly-computed page folder. Step B checks the resolved
+page folder first, then that flat base folder, before concluding nothing
+exists and downloading a fresh duplicate; a legacy-folder hit is reused,
+key-mapped, and relocated into the page folder like any other reuse.
+
+`pageAssets`/`pageFiles` — each a `{created, reused, relocated, failed}`
+count quadruple — land on every page's result array
+(`ImportService::_emptyAssetCounts()`) and render in the Sync Report and the
+legacy upload/CLI result screen; see `docs/cp-and-widget.md`. `failed` is
+incremented (with a matching page-level warning) whenever an item couldn't
+be imported at all — a thrown exception, or `ImageImportService` returning
+`null` (a download failure, an unrecognisable item) — so a payload item is
+never silently absent from the count with no explanation.
+
+**Dry run never creates a folder record.** `_preparePageAssetTargets()`
+threads `$dryRun` straight into `prepare()`/`prepareDocuments()`, which
+resolve read-only (`findFolder()`) on a dry run instead of
+`ensureFolderByFullPathAndVolume()` — this matters under both strategies,
+but especially `'sitemap'`: without it, previewing an import (CLI
+`--dry-run`, or the CP upload Preview screen, which has no lock check and so
+walks every page) would silently create the entire per-page `VolumeFolder`
+tree just from clicking Preview, never actually importing anything into it.
 
 ---
 
@@ -39,16 +161,57 @@ pages or projects happen to share a bare filename. If the mapped asset was
 hard-deleted or trashed, the stale map row is cleared (real runs only) and
 resolution falls through to Step B.
 
-**Step B — filename fallback, in the target folder.** If there's no key
-mapping (first sync since the table was added, or the image has no `key`),
-the service looks for an existing asset with the same filename in the
-resolved volume+folder. A hit is reused, and — on a real run, when the image
-has a key — the key mapping is created here so Step A resolves it directly
-next time. This is also how a Craft install with pre-`contentiq_asset_syncs`
-assets adopts a key mapping without duplicating anything.
+**Step A self-heal — a mapping shared by several keys is untrustworthy.**
+Before Step B existed, several DIFFERENT keys could end up mapped to the
+SAME element (the pre-fix filename collapse — see the "Behaviour change"
+note below). A Step A hit whose element ALSO has `contentiq_asset_syncs`
+rows for OTHER keys is a leftover of that: `_isOldestMappingOwner()` treats
+the OLDEST row (lowest `id`) as the rightful owner — it keeps the element
+and is the only one relocation ever runs for. Every other key's row is
+deleted (real runs only) and that key falls through to Step B/download as
+if it had never been mapped at all, with a page-level warning ("key X
+shared a Craft asset with N other ContentiQ keys — re-imported as its own
+asset"). This makes ownership converge on a stable answer sync over sync,
+rather than drifting to whichever key happened to sync last.
 
-Only when neither step finds anything does the service actually download
-the file and create a new asset.
+**Step B — filename fallback, in the target folder, but ONLY when the
+match isn't already claimed by a different key.** If there's no key mapping
+(first sync since the table was added, or the image has no `key`), the
+service looks for an existing asset with the same filename in the resolved
+volume+folder — but a match is only reused when `_isClaimedByKeyMapping()`
+finds NO `contentiq_asset_syncs` row for it. A hit that DOES have a row is
+a different ContentiQ asset that merely happens to share a filename (every
+page having its own `hero.jpg` is the common shape ContentiQ actually
+sends) — Step B treats that as no match at all and falls through to a fresh
+download, exactly as if the filename lookup had found nothing. On an
+unclaimed hit, it's reused and — on a real run, when the image has a key —
+the key mapping is created here so Step A resolves it directly next time.
+This is also how a Craft install with pre-`contentiq_asset_syncs` assets
+adopts a key mapping without duplicating anything. The same guard applies
+to the legacy-folder fallback below — both share one method,
+`_shouldReuseFilenameMatch()`.
+
+**Behaviour change (2026-09, correctness fix, both strategies):** before
+this guard existed, Step B collapsed same-named files from DIFFERENT
+ContentiQ pages onto a single Craft element under `'flat'` mode too — every
+page's own `hero.jpg` all resolved to whichever element the FIRST synced
+page created, silently misattributing every other page's hero image to it.
+`'sitemap'` mode's relocation made this externally visible (each
+successive page's sync moved the shared element into its own folder, so an
+earlier page's folder ended up with zero assets and its `contentiq_asset_syncs`
+rows pointed at an element sitting in a completely different page's
+folder), but the collapse itself was already happening under `'flat'` — it
+was just invisible there, since nothing ever moved the element. A fresh
+download that lands on a filename another (differently-keyed) asset already
+owns in the same folder — routine under `'flat'`, where every page shares
+one folder — is not an error: `_download()` sets `Asset::$avoidFilenameConflicts
+= true`, so Craft auto-suffixes the new file (`hero_1.jpg`) instead of
+rejecting the save. The suffixing is harmless for idempotency: it's the
+`contentiq_asset_syncs` key mapping, not the filename, that makes the asset
+resolvable on the next sync.
+
+Only when neither step finds an unclaimed match does the service actually
+download the file and create a new asset.
 
 **The hazard — filename sanitization must happen before the Step B lookup,
 not after.** The candidate filename is built with
@@ -95,6 +258,21 @@ Two safety checks run before and during every outbound fetch:
   only because both are "is this URL safe to act on" checks with no Craft
   runtime dependency, not because `safeHref()` is part of the asset
   pipeline.
+
+  **`allowPrivateAssetUrls` — LOCAL DEV ONLY, bypasses this refusal.**
+  `config/contentiq.php`'s `allowPrivateAssetUrls` (default `false`) lets
+  `_download()` skip the public-host check for a private/loopback URL —
+  e.g. a local ContentiQ instance on a dev domain that resolves to
+  `127.0.0.1` (`contentiq.test`), which the SSRF guard would otherwise
+  refuse outright, making local end-to-end asset-download testing
+  impossible. `ALLOW_REDIRECTS => false`, the 25MB size cap, and the 30s
+  timeout are all unaffected — only the public-host refusal is skipped.
+  Only ever takes effect when `Craft::$app->getConfig()->getGeneral()->devMode`
+  is ALSO `true` — `ImageImportService::_privateUrlBypassActive()` checks
+  this itself at the point of use, every time, so a config value that
+  somehow survives into a production deploy stays inert. Logs one
+  `Craft::warning()` per run (not once per asset) the first time the bypass
+  actually lets a URL through, so an active bypass is never silent.
 - **Orphaned-file cleanup** (`_deleteOrphanedFile()`) — before saving a new
   asset, the service checks whether a file with the target name already
   exists on the volume filesystem with no corresponding DB row (live *or*
@@ -177,6 +355,13 @@ resolution path that ends in a resolved id (a Step B reuse or a fresh
 download — never a Step A hit, since that mapping is already correct).
 Deleting a row here doesn't delete the Craft asset; it just means the next
 sync falls back to the Step B filename lookup for that image.
+
+`element_id` is NOT unique on this table — several rows CAN legitimately
+point at the same element, and that's exactly what the Step A self-heal
+(above) watches for: it's the signal that a mapping is a leftover of the
+pre-fix filename collapse rather than a genuine one-key-one-asset pairing.
+`id` (the table's own auto-increment primary key, not `image_key`) is what
+`_isOldestMappingOwner()` compares to pick a stable owner.
 
 ---
 

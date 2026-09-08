@@ -228,7 +228,14 @@ class SyncJob extends BaseJob
                     $isLocked = $syncRow === null ? true : (bool)$syncRow['locked'];
 
                     if ($isLocked) {
-                        $lockedWarnings = ['Skipped — entry is locked.'];
+                        // Asset filing never touches entry content, so it's
+                        // exempt from the lock — file this page's
+                        // assets[]/files[] (and relocate under 'sitemap')
+                        // even though nothing else runs for it. See
+                        // ImportService::importPageAssetsOnly().
+                        $assetsOnly = $importService->importPageAssetsOnly($pageData);
+
+                        $lockedWarnings = array_merge(['Skipped — entry is locked.'], $assetsOnly['warnings']);
 
                         if ($isDuplicateSlug) {
                             $lockedWarnings[] = "Duplicate slug '{$pageSlug}' — a page earlier in this export already used this slug; hierarchy and card-reference resolution may point at the wrong entry.";
@@ -244,6 +251,8 @@ class SyncJob extends BaseJob
                             'parentSlug' => $pageData['document']['parent_slug'] ?? null,
                             'blocks' => [],
                             'images' => [],
+                            'pageAssets' => $assetsOnly['pageAssets'],
+                            'pageFiles' => $assetsOnly['pageFiles'],
                             // Nothing is written this run for a locked entry, so
                             // 'blocks' stays genuinely empty. blockNotes, though,
                             // has a real stored value from the last successful sync

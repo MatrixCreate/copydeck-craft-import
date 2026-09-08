@@ -455,6 +455,22 @@ class ImportController extends Controller
                     $this->stdout("Page: {$slug}\n", Console::BOLD);
                     $this->stdout("  Skipped — entry is locked. Use --force to override.\n", Console::FG_YELLOW);
 
+                    // Asset filing never touches entry content, so it's
+                    // exempt from the lock — file this page's
+                    // assets[]/files[] (and relocate under 'sitemap') even
+                    // though nothing else runs for it. See
+                    // ImportService::importPageAssetsOnly().
+                    $assetsOnly = $importService->importPageAssetsOnly($data, $this->dryRun);
+
+                    if ($this->_hasAnyAssetActivity($assetsOnly['pageAssets']) || $this->_hasAnyAssetActivity($assetsOnly['pageFiles'])) {
+                        $this->stdout('  Page assets: ' . $this->_formatAssetCounts($assetsOnly['pageAssets']) . "\n");
+                        $this->stdout('  Page files: ' . $this->_formatAssetCounts($assetsOnly['pageFiles']) . "\n");
+                    }
+
+                    foreach ($assetsOnly['warnings'] as $warning) {
+                        $this->warning($warning);
+                    }
+
                     $this->_lastEntryId  = $existingEntry->id;
                     $this->_lastCardRefs = [];
 
@@ -469,7 +485,9 @@ class ImportController extends Controller
                         'seoFieldCount' => 0,
                         'blocks'        => [],
                         'images'        => [],
-                        'warnings'      => ['Skipped — entry is locked.'],
+                        'pageAssets'    => $assetsOnly['pageAssets'],
+                        'pageFiles'     => $assetsOnly['pageFiles'],
+                        'warnings'      => array_merge(['Skipped — entry is locked.'], $assetsOnly['warnings']),
                         'error'         => null,
                     ];
 
@@ -545,6 +563,22 @@ class ImportController extends Controller
             }
         }
 
+        // Page-level assets[]/files[] filing — independent of any field, so
+        // it's reported separately from the block/hero image count above.
+        // Printed whenever there's ANY activity, including a failure alone —
+        // a payload item that silently failed with no other activity must
+        // still be visible, not just omitted from a total.
+        $pageAssets = $result['pageAssets'] ?? null;
+        $pageFiles  = $result['pageFiles'] ?? null;
+
+        if ($pageAssets !== null && $this->_hasAnyAssetActivity($pageAssets)) {
+            $this->stdout('  Page assets: ' . $this->_formatAssetCounts($pageAssets) . "\n");
+        }
+
+        if ($pageFiles !== null && $this->_hasAnyAssetActivity($pageFiles)) {
+            $this->stdout('  Page files: ' . $this->_formatAssetCounts($pageFiles) . "\n");
+        }
+
         foreach ($result['warnings'] as $warning) {
             $this->warning($warning);
         }
@@ -560,5 +594,40 @@ class ImportController extends Controller
         }
 
         return ExitCode::OK;
+    }
+
+    /**
+     * Whether a `pageAssets`/`pageFiles` count triple ({created, reused,
+     * relocated, failed}) has any activity worth printing a line for —
+     * including a failure alone, so a payload item that silently failed
+     * doesn't just vanish from the total with no explanation.
+     *
+     * @param array{created: int, reused: int, relocated: int, failed: int} $counts
+     * @return bool
+     */
+    private function _hasAnyAssetActivity(array $counts): bool
+    {
+        return ($counts['created'] ?? 0) > 0
+            || ($counts['reused'] ?? 0) > 0
+            || ($counts['failed'] ?? 0) > 0;
+    }
+
+    /**
+     * Formats a `pageAssets`/`pageFiles` count triple as a one-line
+     * new/reused/relocated/failed breakdown — every number always shown
+     * (never hidden when zero), so a missing item is always visible instead
+     * of silently absent from a total.
+     *
+     * @param array{created: int, reused: int, relocated: int, failed: int} $counts
+     * @return string
+     */
+    private function _formatAssetCounts(array $counts): string
+    {
+        $created   = $counts['created'] ?? 0;
+        $reused    = $counts['reused'] ?? 0;
+        $relocated = $counts['relocated'] ?? 0;
+        $failed    = $counts['failed'] ?? 0;
+
+        return "{$created} new, {$reused} reused ({$relocated} relocated), {$failed} failed";
     }
 }

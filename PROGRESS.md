@@ -2,6 +2,14 @@
 
 Capped rolling log — older entries roll off verbatim to `docs/_archive/`. Durable knowledge belongs in `docs/`, not accumulated here.
 
+## Sitemap-mirroring asset folders + self-healing asset collision fix (2026-09-08)
+
+ContentiQ now exports per-page `assets[]`/`files[]` (images/PDFs) plus `document.path`; this plugin files both, independent of any field, with an optional `assetFolderStrategy: 'sitemap'` mirroring the sitemap into the asset volume (default `'flat'`, byte-identical). New config: `assetFolderStrategy`, `documentVolume`, `allowPrivateAssetUrls` (dev-only SSRF bypass, inert unless `devMode`) — full mechanics and config surface in `docs/assets.md`.
+
+Real AA sync data exposed a PRE-EXISTING bug, present under both strategies: a filename/key match was trusted even when it belonged to a DIFFERENT ContentiQ asset sharing a name (every page's own `hero.jpg` collapsing onto one Craft element — `'sitemap'`'s relocation just made it visible). Step A and Step B now both self-heal (oldest mapping wins, others re-import as their own asset) and warn on EVERY image call site — hero/SEO/card/CTA/custom-block/globals, not just the page-asset step. Dry-run/CP Preview no longer create folder records under `'sitemap'`.
+
+`tests/run-transforms.php` 184 assertions, `tests/run-security.php` 47 — both green, `php -l` clean. Not released — next tag is `1.25.0`.
+
 ## Collection-child Body Text content — `blocks[]` + optional `content` together (2026-09-07)
 
 ContentiQ's export contract for collection children is changing: a page with ranges marked up can now carry `blocks[]` PLUS an optional `content` key holding the page's explicitly-marked **Body Text** sections — a MANUAL markup block the editor applies deliberately (not leftover/unmarked text), merged in page order, present only when the editor marked at least one Body Text range (omitted entirely when they marked none). Previously the wire contract was strictly either/or, and `_buildCollectionChildContentFields()` always cleared `contentField`/`headingField` to `''` whenever `blocks[]` was present, discarding any content outright.

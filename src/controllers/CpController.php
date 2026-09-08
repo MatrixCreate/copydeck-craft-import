@@ -449,6 +449,13 @@ class CpController extends Controller
                 if ($isLocked) {
                     $lockedSlug = $pageData['document']['slug'] ?? '';
 
+                    // Asset filing never touches entry content, so it's
+                    // exempt from the lock — file this page's
+                    // assets[]/files[] (and relocate under 'sitemap') even
+                    // though nothing else runs for it. See
+                    // ImportService::importPageAssetsOnly().
+                    $assetsOnly = $importService->importPageAssetsOnly($pageData);
+
                     $pageResults[] = [
                         'success'       => true,
                         'slug'          => $lockedSlug,
@@ -458,8 +465,10 @@ class CpController extends Controller
                         'seoFieldCount' => 0,
                         'blocks'        => [],
                         'images'        => [],
+                        'pageAssets'    => $assetsOnly['pageAssets'],
+                        'pageFiles'     => $assetsOnly['pageFiles'],
                         'blockNotes'    => '',
-                        'warnings'      => ['Skipped — entry is locked.'],
+                        'warnings'      => array_merge(['Skipped — entry is locked.'], $assetsOnly['warnings']),
                         'error'         => null,
                         'skipped'       => false,
                         'contentType'   => $pageData['document']['content_type'] ?? null,
