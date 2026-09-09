@@ -4,6 +4,7 @@ namespace matrixcreate\contentiqimporter\services;
 
 use Craft;
 use matrixcreate\contentiqimporter\ContentIQImporter;
+use matrixcreate\contentiqimporter\helpers\AssetFolderPath;
 use matrixcreate\contentiqimporter\helpers\LinkHelper;
 use yii\base\Component;
 
@@ -65,6 +66,18 @@ class MatrixBuilder extends Component
      */
     private array $_warnings = [];
 
+    /**
+     * Whether this run's `assetFolderStrategy` is `'sitemap'` — mirrors
+     * `ImportService::_preparePageAssetTargets()`'s own `$isSitemap` derivation
+     * from the same config key. Image Gallery folder mode (`assetFolder`
+     * handler) only works under `'sitemap'`: under `'flat'` every page shares
+     * one asset folder, so a gallery's `folder` would point at a folder
+     * holding every page's images. See `_handleAssetFolder()`.
+     *
+     * @var bool
+     */
+    private bool $_isSitemap = false;
+
     // Public Methods
     // =========================================================================
 
@@ -84,6 +97,8 @@ class MatrixBuilder extends Component
 
         // Overrides replace entire block definitions — not merged at field level.
         $this->_mapping = array_replace($defaults, $overrides);
+
+        $this->_isSitemap = ($config['assetFolderStrategy'] ?? 'flat') === 'sitemap';
     }
 
     /**
@@ -774,6 +789,8 @@ class MatrixBuilder extends Component
             'uspContent'             => $this->_handleUspContent($craftHandle, $value),
             'collectionSection'      => $this->_handleCollectionSection($craftHandle, $value),
             'collectionListingNodes' => $this->_handleCollectionListingNodes($craftHandle, $value),
+            'gallerySource'          => $this->_handleGallerySource($craftHandle, $value),
+            'assetFolder'            => $this->_handleAssetFolder($craftHandle, $value, $dryRun),
             default                  => $this->_handlePassThrough($craftHandle, $value),
         };
     }
@@ -953,14 +970,18 @@ class MatrixBuilder extends Component
     }
 
     /**
-     * Renders Collection Listing intro nodes, dropping bracketed listing
-     * placeholders first.
+     * Renders Collection Listing intro nodes.
      *
      * ContentiQ authors mark where the listing sits with a paragraph like
-     * "[Blog Listing]", "[Team Listing]" or "[Listing Grid]". The rendered
-     * listing takes that space in Craft, so any paragraph whose entire text is
-     * square-bracketed and contains the word "listing" or "grid" is dropped
-     * before the remaining nodes render to HTML.
+     * "[Blog Listing]", "[Team Listing]" or "[Listing Grid]" — the rendered
+     * listing takes that space in Craft, so it must never appear as literal
+     * text. This used to run its own narrow regex here
+     * (`/^\[[^\[\]]*\b(listings?|grids?)\b[^\[\]]*\]$/i`); that's now
+     * superseded by NodesRenderer's general, vocabulary-free placeholder rule
+     * (any node whose entire text is one bracketed string — see
+     * NodesRenderer::PLACEHOLDER_PATTERN), which is a strict superset and
+     * runs unconditionally inside render() itself. No separate filtering
+     * needed here any more — same shape as _handleNodes().
      *
      * @param string $handle
      * @param mixed  $value
@@ -970,17 +991,111 @@ class MatrixBuilder extends Component
     {
         $nodes = is_array($value) ? $value : [];
 
-        $nodes = array_values(array_filter($nodes, function (mixed $node): bool {
-            if (!is_array($node) || ($node['type'] ?? '') !== 'paragraph') {
-                return true;
+        return [$handle => ContentIQImporter::$plugin->nodes->render($nodes)];
+    }
+
+    /**
+     * Maps ContentIQ's neutral Image Gallery `source` vocabulary
+     * (`'images'` | `'folder'`) to Craft's `imageSource` dropdown values
+     * (`'images'` | `'folders'` — note Craft's is plural for the folder
+     * option). Anything else (missing key, unrecognised value) defaults to
+     * `'images'`, matching the dropdown's own default and Phase 1's
+     * always-`'images'` wire contract.
+     *
+     * @param string $handle Destination Craft field handle ('imageSource').
+     * @param mixed  $value  ContentIQ 'source' wire value.
+     * @return array<string, string>
+     */
+    private function _handleGallerySource(string $handle, mixed $value): array
+    {
+        return [$handle => $value === 'folder' ? 'folders' : 'images'];
+    }
+
+    /**
+     * Resolves an Image Gallery's "Choose Folder" `folder` wire value (a raw
+     * ContentIQ folder name) to the UID string `AssetFolderField` expects.
+     *
+     * Requires `assetFolderStrategy: 'sitemap'` — under `'flat'` every page
+     * shares one asset folder, so a per-page gallery folder can't be named
+     * without pointing at a folder holding every OTHER page's images too.
+     * Warns and leaves the field null rather than writing a wrong folder.
+     *
+     * `_resolveFieldByHandler()` is never given the page's own resolved
+     * asset folder path, so this reads it from
+     * `ImageImportService::getPreparedFolderPath()` — set once per page by
+     * `ImportService::_preparePageAssetTargets()`'s `prepare()` call, which
+     * always runs before `MatrixBuilder::build()` (see docs/import-pipeline.md).
+     * `AssetFolderPath::withSubfolder()` appends the gallery's own folder
+     * name as one more level under that page folder, matching how
+     * `assets[]`/`files[]` items with their own ContentIQ `folder` are filed.
+     *
+     * Folder resolution mirrors every other lookup in this plugin: read-only
+     * (`findFolder()`, via `ImageImportService::resolveFolderByPath()`) on a
+     * dry run — including the CP Preview screen, which is also `$dryRun`
+     * here — so previewing a sync never creates folder records; a real run
+     * creates the folder if it doesn't exist yet. A not-yet-existing folder
+     * on a dry run resolves to null WITHOUT a warning — that's the expected,
+     * silent Preview shape, not a failure.
+     *
+     * `AssetFolderField` performs no validation of its own — a bad UID
+     * normalises to null silently in Craft — so the resolved folder is
+     * checked against the run's own prepared images volume before its UID
+     * is trusted; anything else (unresolvable, wrong volume) warns and
+     * leaves the field null.
+     *
+     * @param string $handle Destination Craft field handle ('assetFolder').
+     * @param mixed  $value  ContentIQ 'folder' wire value — a raw folder name, or null.
+     * @param bool   $dryRun
+     * @return array<string, string|null>
+     */
+    private function _handleAssetFolder(string $handle, mixed $value, bool $dryRun): array
+    {
+        $folderName = is_string($value) ? trim($value) : '';
+
+        if ($folderName === '') {
+            // 'images' mode (or a malformed 'folder' value) — nothing to resolve.
+            return [$handle => null];
+        }
+
+        if (!$this->_isSitemap) {
+            $this->_warnings[] = "Image Gallery \"Choose Folder\" folder \"{$folderName}\" was skipped — folder mode needs assetFolderStrategy 'sitemap' in config/contentiq.php (this project uses 'flat', where every page shares one asset folder).";
+
+            return [$handle => null];
+        }
+
+        $images         = ContentIQImporter::$plugin->images;
+        $pageFolderPath = $images->getPreparedFolderPath();
+
+        if ($pageFolderPath === null) {
+            $this->_warnings[] = "Image Gallery folder \"{$folderName}\" could not be resolved — this page's asset folder was never prepared.";
+
+            return [$handle => null];
+        }
+
+        $fullPath = AssetFolderPath::withSubfolder($pageFolderPath, $folderName);
+        $folder   = $images->resolveFolderByPath($fullPath, $dryRun);
+
+        if ($folder === null) {
+            // Dry-run (including CP Preview): a not-yet-existing folder is
+            // the expected, silent shape — nothing has synced yet to have
+            // created it. A real run reaching here means the images volume
+            // itself is unresolved (see resolveFolderByPath()).
+            if (!$dryRun) {
+                $this->_warnings[] = "Image Gallery folder \"{$folderName}\" could not be resolved to a Craft asset folder — check the 'assetVolume' key in config/contentiq.php.";
             }
 
-            $text = is_scalar($node['text'] ?? null) ? trim((string)$node['text']) : '';
+            return [$handle => null];
+        }
 
-            return !preg_match('/^\[[^\[\]]*\b(listings?|grids?)\b[^\[\]]*\]$/i', $text);
-        }));
+        $volume = $images->getPreparedVolume();
 
-        return [$handle => ContentIQImporter::$plugin->nodes->render($nodes)];
+        if ($volume === null || (int)$folder->volumeId !== (int)$volume->id) {
+            $this->_warnings[] = "Image Gallery folder \"{$folderName}\" resolved outside the expected asset volume — skipped.";
+
+            return [$handle => null];
+        }
+
+        return [$handle => $folder->uid];
     }
 
     /**

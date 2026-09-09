@@ -3,11 +3,14 @@
 What this covers: how `ImageImportService` downloads a ContentiQ image
 reference and turns it into (or reuses) a Craft asset — the idempotency
 rules, the SSRF/temp-file safety net around the download, the CLI webroot
-quirk, how the multi-image "custom" block field fits in, and the
+quirk, how the multi-image "custom"/"image_gallery" block fields fit in,
+the
 `assetFolderStrategy: 'sitemap'` folder-filing/relocation behaviour added
-in 1.25.0.
+in 1.25.0, and Image Gallery "Choose Folder" mode (the `gallerySource`/
+`assetFolder` handlers and the R9 relocation guard that protects a
+gallery-folder image also used by a block elsewhere on the page).
 
-Verified against code 2026-09-08.
+Verified against code 2026-09-09.
 
 ---
 
@@ -117,8 +120,8 @@ result, so the DB/disk mismatch is visible instead of indistinguishable
 from a real move. This `warning` (same for the Step A self-heal above) is
 wired through EVERY `importFromField()`/`importFile()` caller, not just the
 page-level `assets[]`/`files[]` step — hero desktop/mobile, SEO `og_image`,
-card image, CTA image/background, the Custom block's multi-image field,
-and globals (branding/office images, via `_countImage()`) all push a
+card image, CTA image/background, the Custom and Image Gallery blocks'
+multi-image fields, and globals (branding/office images, via `_countImage()`) all push a
 non-empty `warning` into their own result's `warnings` list.
 
 **Legacy-folder Step B fallback** (`'sitemap'` only) — an asset synced
@@ -308,18 +311,151 @@ argument.
 
 ---
 
-## Multi-image custom blocks
+## Multi-image blocks
 
-The Custom block type's `images` field (Craft handle `contentiqImages`,
-configured in `src/config/defaults.php`) accepts an array of `{key, url,
-alt}` objects rather than a single image. `MatrixBuilder::_handleImages()`
-iterates the array, calling `importFromField()` per entry through the same
-idempotency path described above; a single bad entry (missing `url`, or a
-download failure) is skipped with a warning and does not fail the rest of
-the block. A conventional "up to 10" cap is documented in the block's Craft
-field config (`maxEntries`) — not something the importer itself enforces or
-counts — check the Assets field definition in the target project's
-`config/project/fields/` if you need the current cap.
+The Custom block's `images` field (Craft handle `contentiqImages`) and the
+Image Gallery block's `images` field (Craft handle `images`, images-mode
+only — see [block-mapping.md](block-mapping.md)) both accept an array of
+`{key, url, alt}` objects rather than a single image, and both are wired to
+the same `'images'` handler in `src/config/defaults.php`.
+`MatrixBuilder::_handleImages()` iterates the array, calling
+`importFromField()` per entry through the same idempotency path described
+above; a single bad entry (missing `url`, or a download failure) is skipped
+with a warning and does not fail the rest of the block. Any cap is entirely
+a property of the target Craft field's config (`maxEntries`/`maxRelations`)
+— `_handleImages()` itself enforces none — so check the Assets field
+definition in the target project's `config/project/fields/` if you need the
+current cap for a given block. Custom's field is conventionally capped at
+10; Image Gallery's is uncapped (`maxRelations: null`) by design. In Image
+Gallery folder mode (below), the wire's `images[]` is always `[]` — the
+handler still runs and correctly emits an empty array (never omitted; see
+`AGENTS.md`'s "empty array, not an omitted key" rule) — the gallery's
+pictures instead flow through the page's own `assets[]` into the folder
+`assetFolder` (the field handler, below) names.
+
+---
+
+## Image Gallery "Choose Folder" mode
+
+Two more `image_gallery` handlers, on top of `images`/`nodes` above: the
+wire's `source` (`'images'` | `'folder'`) and `folder` (a raw ContentiQ
+folder name, or `null`) keys. **Don't confuse `folder` the field handler
+here with `assetFolder` the config key** (`config/contentiq.php`'s base
+volume folder, `docs/assets.md` above) — same word, unrelated: one names a
+Craft field handle (`AssetFolderField`), the other a config value.
+
+- **`gallerySource`** (`MatrixBuilder::_handleGallerySource()`) — maps
+  ContentiQ's neutral wire vocabulary to Craft's `imageSource` dropdown:
+  `'images'` → `'images'`, `'folder'` → `'folders'` (note Craft's is
+  **plural**). Anything else defaults to `'images'`.
+- **`assetFolder`** (`MatrixBuilder::_handleAssetFolder()`) — resolves the
+  wire's raw folder name to the UID string `AssetFolderField` expects
+  (`$folder->uid`; `AssetFolderField::serializeValue()`/`normalizeValue()`
+  in the target Craft project — see the field's own source, not this repo).
+  A `null`/blank wire value (images mode) is a no-op → field stays `null`.
+
+**Requires `assetFolderStrategy: 'sitemap'`.** Under `'flat'` every page
+shares one asset folder (see above), so a folder-mode gallery's folder would
+hold every OTHER page's images too — `_handleAssetFolder()` warns
+("… folder mode needs assetFolderStrategy 'sitemap' …") and leaves the field
+`null` rather than writing a folder that silently over-shares.
+
+**The page's own folder path, exposed.** `_resolveFieldByHandler()` is
+never given the page's resolved asset folder — nothing in `MatrixBuilder`
+knows it. `ImageImportService` does (it's what `_preparePageAssetTargets()`
+calls `prepare()` with), so `_handleAssetFolder()` reads it via
+`ImageImportService::getPreparedFolderPath()`, a plain accessor for the
+exact string `prepare()` was called with. **Deliberately not derived from
+`$_folder->path`** — Craft's `VolumeFolder::$path` carries a trailing slash,
+which would need an `rtrim()` at every call site; stashing the raw
+`$folderPath` string once, in `prepare()`, avoids that trap entirely.
+`AssetFolderPath::withSubfolder($pageFolderPath, $folderName)` then appends
+the gallery's own folder name as one more level — the exact same call shape
+`_importPageAssets()` already uses for an `assets[]` item's own `folder`
+(above), so a folder-mode gallery names a folder that ITS OWN `assets[]`
+entries (same ContentiQ folder name) are already filing into; nothing new
+gets created data-wise, only named.
+
+**The dry-run split is enforced in `ImageImportService::resolveFolderByPath()`**
+— a public wrapper around the same `_resolveFolderByPath()` every other
+per-item folder override uses, scoped to the run's already-`prepare()`d
+images volume: `findFolder()` (read-only, never creates a record) on
+`$dryRun` — which covers CLI `--dry-run` **and** the CP Preview screen, both
+already `$dryRun` throughout this plugin — and
+`ensureFolderByFullPathAndVolume()` only on a real run. This is the same
+split `_resolveVolumeAndFolder()`/`_resolveFolderByPath()` already enforce
+elsewhere (see "Dry run never creates a folder record" above); reusing it
+here rather than a fresh lookup is what keeps a folder-mode gallery from
+regressing that 2026-09-08 fix. **On a dry run, a not-yet-existing folder
+resolves to `null` — silently, no warning.** That's the expected Preview
+shape (nothing has synced yet to have created the folder), not a failure; a
+real run reaching a `null` result instead warns, since it means the images
+volume itself is unresolved.
+
+**No validation on the Craft side, so this handler is the only guard.**
+`AssetFolderField` performs none of its own — a bad/foreign UID normalises
+to `null` silently (`normalizeValue()`, `getFolderByUid()`). Before trusting
+a resolved folder's UID, `_handleAssetFolder()` checks it against
+`ImageImportService::getPreparedVolume()` (the run's own resolved
+`assetVolume`) and warns + leaves the field `null` on a mismatch, rather
+than ever writing a folder outside the volume the field is meant to point
+into.
+
+### R9 — protecting a shared image from sitemap relocation
+
+**The trap.** A Craft asset lives in exactly one folder, and a folder-mode
+gallery's Craft template renders by folder membership
+(`craft.assets().folderId(block.assetFolder.id)…`), not an explicit
+relation. So if an image inside a ContentiQ gallery folder is ALSO used as a
+block image elsewhere on the same page (hero, a card, text-and-media), that
+image is (a) subtracted from `assets[]` by ContentiQ itself (the same
+block-referenced-key subtraction ContentiQ already applies for the Custom
+block's `images[]`, so it doesn't export twice) and imported into the page
+folder ROOT via the block path instead, then (b) **actively relocated OUT of the
+gallery folder** by the ordinary `'sitemap'` relocation behaviour (above) —
+`_relocateIfNeeded()` moves unconditionally whenever the asset's current
+folder differs from the target. The gallery then silently renders short by
+exactly the images it shares with a block.
+
+**The fix — a protected-folder set, threaded through per page.**
+`ImportService::_resolveProtectedGalleryFolderIds()` scans the page's
+`blocks[]` for `image_gallery` blocks with `source === 'folder'`, resolves
+each one's folder name to a Craft folder id the same way
+`_handleAssetFolder()` does (`AssetFolderPath::withSubfolder()` +
+`ImageImportService::resolveFolderByPath()`), and returns the set. Both
+`ImportService::importPage()` and `_importCollectionChild()`
+(`→ _buildBlockFieldValues()`) call
+`ImageImportService::setProtectedFolderIds()` with that set **after**
+`_importPageAssets()` (so a folder-mode gallery's own `assets[]` images have
+already created its folder) and **before** `MatrixBuilder::build()` (so
+every block image resolved by it — hero/card/text-and-media — honours the
+protection). `_relocateIfNeeded()` gains one additional early return: an
+asset whose CURRENT folder id is in the protected set is never moved,
+full stop — everything else (legacy root relocation, the ordinary
+ContentiQ-folder sub-level move) behaves exactly as it did before R9.
+
+The protected set is reset to empty on every `ImageImportService::prepare()`
+call (once per page, at the very start of asset handling) so a previous
+page's protection can never leak into the next page's `assets[]` filing
+step — which runs BEFORE this page's own protected set is known, and where
+relocation must still behave completely normally (filing an item into its
+OWN designated folder, including a gallery's, is the intended function, not
+the R9 bug).
+
+**Two residual limits, by design, not bugs to chase:**
+- **No-op under `'flat'`.** `_resolveProtectedGalleryFolderIds()` returns
+  `[]` immediately when `$isSitemap` is false — consistent with folder mode
+  not resolving at all under `'flat'` (above), so there's nothing to
+  protect there in the first place.
+- **Per-page only.** The protected set is built from THIS page's own
+  `blocks[]`. An asset physically sitting in ANOTHER page's gallery folder
+  (e.g. a shared stock image referenced as a hero on page B, but living in
+  page A's gallery folder) is still relocated when page B syncs — breaking
+  page A's gallery. Each ContentiQ asset key resolves to its own Craft
+  element after the asset-folders self-heal (1.25.0+), so cross-page sharing
+  of a single element should be rare, but it is the one gap R9 doesn't
+  close. Worth checking first if a gallery mysteriously loses an image after
+  an unrelated page's sync.
 
 ---
 

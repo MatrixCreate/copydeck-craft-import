@@ -579,6 +579,15 @@ class ImportController extends Controller
             $this->stdout('  Page files: ' . $this->_formatAssetCounts($pageFiles) . "\n");
         }
 
+        // Bracketed placeholder nodes (e.g. "[Product grid]") dropped rather
+        // than written into this page's rich text — see
+        // NodesRenderer::getPlaceholderCount().
+        $placeholdersDropped = $result['placeholdersDropped'] ?? 0;
+
+        if ($placeholdersDropped > 0) {
+            $this->stdout("  Placeholders stripped: {$placeholdersDropped}\n");
+        }
+
         foreach ($result['warnings'] as $warning) {
             $this->warning($warning);
         }

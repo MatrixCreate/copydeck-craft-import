@@ -118,7 +118,8 @@
                        still renders this row instead of silently vanishing. #}
                     {% set pageAssetsTotal = (page.pageAssets.created ?? 0) + (page.pageAssets.reused ?? 0) + (page.pageAssets.failed ?? 0) %}
                     {% set pageFilesTotal = (page.pageFiles.created ?? 0) + (page.pageFiles.reused ?? 0) + (page.pageFiles.failed ?? 0) %}
-                    {% if (page.warnings ?? [])|length or page.error ?? null or blockNotes != '' or routingNotes != '' or pageAssetsTotal or pageFilesTotal %}
+                    {% set placeholdersDropped = page.placeholdersDropped ?? 0 %}
+                    {% if (page.warnings ?? [])|length or page.error ?? null or blockNotes != '' or routingNotes != '' or pageAssetsTotal or pageFilesTotal or placeholdersDropped %}
                         <tr>
                             <td colspan="6" style="padding-left:32px;">
                                 {% if page.error ?? null %}
@@ -147,6 +148,14 @@
                                         {% if pageAssetsTotal %}{{ (page.pageAssets.created ?? 0) }} new page asset{{ (page.pageAssets.created ?? 0) == 1 ? '' : 's' }}, {{ (page.pageAssets.reused ?? 0) }} reused ({{ (page.pageAssets.relocated ?? 0) }} relocated){% if page.pageAssets.failed ?? 0 %}, <span style="color:var(--warning-color);">{{ page.pageAssets.failed }} failed</span>{% endif %}{% endif %}
                                         {%- if pageAssetsTotal and pageFilesTotal %} &middot; {% endif -%}
                                         {% if pageFilesTotal %}{{ (page.pageFiles.created ?? 0) }} new page file{{ (page.pageFiles.created ?? 0) == 1 ? '' : 's' }}, {{ (page.pageFiles.reused ?? 0) }} reused ({{ (page.pageFiles.relocated ?? 0) }} relocated){% if page.pageFiles.failed ?? 0 %}, <span style="color:var(--warning-color);">{{ page.pageFiles.failed }} failed</span>{% endif %}{% endif %}
+                                    </div>
+                                {% endif %}
+                                {# Bracketed placeholder nodes (e.g. "[Product grid]") dropped
+                                   rather than written into this page's rich text — see
+                                   NodesRenderer::getPlaceholderCount(). #}
+                                {% if placeholdersDropped %}
+                                    <div class="light">
+                                        {{ placeholdersDropped }} placeholder{{ placeholdersDropped == 1 ? '' : 's' }} stripped
                                     </div>
                                 {% endif %}
                             </td>

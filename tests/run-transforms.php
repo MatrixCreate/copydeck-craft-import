@@ -446,6 +446,220 @@ check(
 );
 
 // -----------------------------------------------------------------------------
+// MatrixBuilder — image_gallery block mapping (Phase 1 images mode + Phase 2
+// "Choose Folder" mode).
+//
+// Phase 1 added no new handler code: defaults.php's 'image_gallery' entry
+// reused the existing 'images' (_handleImages()) and 'nodes' (_handleNodes())
+// handlers verbatim — the same pairing 'custom' already uses. Phase 2 adds
+// two: 'gallerySource' (maps the neutral wire 'images'|'folder' to Craft's
+// imageSource dropdown's 'images'|'folders') and 'assetFolder' (resolves a
+// folder-mode gallery's target folder to its Craft UID, gated on
+// assetFolderStrategy 'sitemap'). See
+// ~/.claude/plans/contentiq-image-gallery-block.md §6/§9 R9.
+//
+// The 'sitemap' cases below exercise AssetFolderPath::withSubfolder()'s real
+// (non-injected) sanitizer via _handleAssetFolder(), same as
+// ImportService's per-item-folder-override test further down — needs the
+// assets-helper-stub loaded first (see that section's own comment).
+// -----------------------------------------------------------------------------
+echo "\nMatrixBuilder — image_gallery block mapping\n";
+
+require_once __DIR__ . '/fixtures/assets-helper-stub.php';
+
+$galleryImages = new class {
+    public array $calls = [];
+    /** @var \Closure|null Set per-test to control resolveFolderByPath()'s return. */
+    public ?\Closure $resolveFolderByPathFn = null;
+    public ?string $preparedFolderPath = 'contentiq/homepage';
+    public $preparedVolume;
+
+    public function importFromField($item, $dryRun = false, $folderPathOverride = null)
+    {
+        $this->calls[] = $item;
+        return ['id' => 900 + count($this->calls), 'filename' => $item['key'] ?? '', 'reused' => false, 'warning' => null];
+    }
+
+    public function getPreparedFolderPath(): ?string
+    {
+        return $this->preparedFolderPath;
+    }
+
+    public function getPreparedVolume()
+    {
+        return $this->preparedVolume;
+    }
+
+    public function resolveFolderByPath(string $path, bool $dryRun)
+    {
+        return $this->resolveFolderByPathFn !== null ? ($this->resolveFolderByPathFn)($path, $dryRun) : null;
+    }
+};
+
+// Stand-in VolumeFolder — only the properties _handleAssetFolder() reads.
+$makeFolder = static fn(int $id, string $uid, int $volumeId) => new class($id, $uid, $volumeId) {
+    public function __construct(public int $id, public string $uid, public int $volumeId)
+    {
+    }
+};
+$preparedVolume = new class {
+    public int $id = 5;
+};
+$galleryImages->preparedVolume = $preparedVolume;
+
+$galleryPlugin = new class {
+    public $nodes;
+    public $images;
+    public $imports;
+};
+$galleryPlugin->nodes   = new \matrixcreate\contentiqimporter\services\NodesRenderer();
+$galleryPlugin->images  = $galleryImages;
+$galleryPlugin->imports = $fakeImports;
+
+\matrixcreate\contentiqimporter\ContentIQImporter::$plugin = $galleryPlugin;
+
+/**
+ * Builds one image_gallery block against a given config (assetFolderStrategy
+ * etc) and fields.
+ */
+$buildGalleryBlock = static function(array $fields, array $config = ['blockOverrides' => []], bool $dryRun = false): array {
+    $builder = new \matrixcreate\contentiqimporter\services\MatrixBuilder();
+    $builder->prepare($config);
+
+    return $builder->build([['type' => 'image_gallery', 'fields' => $fields]], $dryRun);
+};
+
+// --- Images mode (Phase 1 shape) --------------------------------------------
+$imagesModeBuilt = $buildGalleryBlock([
+    'source' => 'images',
+    'folder' => null,
+    'images' => [
+        ['key' => '48/2230/a.jpg', 'url' => 'https://example.test/a.jpg', 'alt' => '', 'credit' => '', 'caption' => ''],
+        ['key' => '48/2230/b.jpg', 'url' => 'https://example.test/b.jpg', 'alt' => '', 'credit' => '', 'caption' => ''],
+    ],
+    'nodes' => [
+        ['type' => 'heading', 'level' => 2, 'text' => 'Our work'],
+    ],
+]);
+
+check('image_gallery outer type', 'imageGallery', $imagesModeBuilt['matrixData']['new1']['type'] ?? null);
+check(
+    'image_gallery richText renders the nodes field',
+    '<h2>Our work</h2>',
+    $imagesModeBuilt['matrixData']['new1']['fields']['richText'] ?? null,
+);
+check(
+    'image_gallery images field resolves one id per image, no cap',
+    [901, 902],
+    $imagesModeBuilt['matrixData']['new1']['fields']['images'] ?? null,
+);
+check(
+    "images mode: gallerySource maps 'images' → 'images'",
+    'images',
+    $imagesModeBuilt['matrixData']['new1']['fields']['imageSource'] ?? null,
+);
+check(
+    'images mode: assetFolder stays null — no folder value on the wire',
+    null,
+    $imagesModeBuilt['matrixData']['new1']['fields']['assetFolder'] ?? null,
+);
+check(
+    'image_gallery emits exactly the four mapped Craft fields',
+    ['imageSource', 'images', 'assetFolder', 'richText'],
+    array_keys($imagesModeBuilt['matrixData']['new1']['fields'] ?? []),
+);
+check('image_gallery block not skipped', [false], array_column($imagesModeBuilt['blockReport'], 'skipped'));
+check('images mode: no warnings', [], $imagesModeBuilt['warnings']);
+
+// --- Folder mode, 'sitemap' strategy, folder resolves -----------------------
+$galleryImages->calls                  = [];
+$galleryImages->preparedFolderPath     = 'contentiq/homepage';
+$galleryImages->resolveFolderByPathFn  = function(string $path, bool $dryRun) use ($makeFolder) {
+    return $path === 'contentiq/homepage/product-category-grid'
+        ? $makeFolder(42, 'folder-uid-42', 5)
+        : null;
+};
+
+$folderModeBuilt = $buildGalleryBlock(
+    ['source' => 'folder', 'folder' => 'Product Category Grid', 'images' => [], 'nodes' => []],
+    ['blockOverrides' => [], 'assetFolderStrategy' => 'sitemap'],
+);
+
+check(
+    "folder mode: gallerySource maps 'folder' → 'folders'",
+    'folders',
+    $folderModeBuilt['matrixData']['new1']['fields']['imageSource'] ?? null,
+);
+check(
+    'folder mode: assetFolder resolves to the folder UID',
+    'folder-uid-42',
+    $folderModeBuilt['matrixData']['new1']['fields']['assetFolder'] ?? null,
+);
+check(
+    'folder mode: images field emits empty array (wire images[] is [])',
+    [],
+    $folderModeBuilt['matrixData']['new1']['fields']['images'] ?? 'MISSING',
+);
+check('folder mode: no warnings on a clean resolve', [], $folderModeBuilt['warnings']);
+
+// --- Folder mode, 'flat' strategy (default) — guarded, no wrong folder -----
+$galleryImages->calls = [];
+$flatGuardBuilt = $buildGalleryBlock(
+    ['source' => 'folder', 'folder' => 'Product Category Grid', 'images' => [], 'nodes' => []],
+    ['blockOverrides' => []], // no assetFolderStrategy key → defaults 'flat'
+);
+
+check(
+    "flat guard: assetFolder stays null under 'flat' — never a wrong shared folder",
+    null,
+    $flatGuardBuilt['matrixData']['new1']['fields']['assetFolder'] ?? null,
+);
+check('flat guard: warns exactly once', 1, count($flatGuardBuilt['warnings']));
+check(
+    "flat guard: warning names the folder and 'sitemap'",
+    true,
+    isset($flatGuardBuilt['warnings'][0])
+        && str_contains($flatGuardBuilt['warnings'][0], 'Product Category Grid')
+        && str_contains($flatGuardBuilt['warnings'][0], 'sitemap'),
+);
+
+// --- Folder mode, dry run, folder not yet resolvable — silent null ---------
+$galleryImages->calls                 = [];
+$galleryImages->resolveFolderByPathFn = fn(string $path, bool $dryRun) => null; // not-yet-existing
+
+$dryRunGalleryBuilt = $buildGalleryBlock(
+    ['source' => 'folder', 'folder' => 'Brand New Folder', 'images' => [], 'nodes' => []],
+    ['blockOverrides' => [], 'assetFolderStrategy' => 'sitemap'],
+    dryRun: true,
+);
+
+check(
+    'dry run: unresolvable folder stays null',
+    null,
+    $dryRunGalleryBuilt['matrixData']['new1']['fields']['assetFolder'] ?? null,
+);
+check('dry run: no warning for a not-yet-existing folder', [], $dryRunGalleryBuilt['warnings']);
+
+// --- Folder mode, real run, folder resolves outside the expected volume ----
+$galleryImages->calls                 = [];
+$galleryImages->resolveFolderByPathFn = fn(string $path, bool $dryRun) => $makeFolder(99, 'wrong-volume-uid', 7); // volume 7, expected 5
+
+$wrongVolumeBuilt = $buildGalleryBlock(
+    ['source' => 'folder', 'folder' => 'Product Category Grid', 'images' => [], 'nodes' => []],
+    ['blockOverrides' => [], 'assetFolderStrategy' => 'sitemap'],
+);
+
+check(
+    'wrong volume: assetFolder stays null rather than trusting a cross-volume UID',
+    null,
+    $wrongVolumeBuilt['matrixData']['new1']['fields']['assetFolder'] ?? null,
+);
+check('wrong volume: warns once', 1, count($wrongVolumeBuilt['warnings']));
+
+// Restore the shared plugin double for anything below that still depends on it.
+\matrixcreate\contentiqimporter\ContentIQImporter::$plugin = $fakePlugin;
+
+// -----------------------------------------------------------------------------
 // ImportService — §7.5 hero shape probe; §7.6/§7.6.1 legacy-field clearing /
 // Body-Text-content replacement (rulings O2/O4) and its guard-2 "was this
 // previously non-empty" warnings.
@@ -1020,7 +1234,7 @@ check(
     $recordingImages->calls[0]['folder'],
 );
 
-require __DIR__ . '/fixtures/assets-helper-stub.php';
+require_once __DIR__ . '/fixtures/assets-helper-stub.php';
 
 $recordingImages->calls = [];
 $sitemapTargets = ['pageFolder' => 'contentiq/homepage', 'isSitemap' => true, 'documentsReady' => true, 'warnings' => []];
@@ -1029,6 +1243,94 @@ check(
     "'sitemap' strategy: item's own folder DOES produce a folderPathOverride",
     'contentiq/homepage/product-grid',
     $recordingImages->calls[0]['folder'],
+);
+
+// -----------------------------------------------------------------------------
+// R9 (Image Gallery folder mode, docs/assets.md, plan §4b) —
+// _resolveProtectedGalleryFolderIds() computes the per-page "protected
+// folder" set passed to ImageImportService::setProtectedFolderIds() before
+// MatrixBuilder::build() (see ImportService's call sites in importPage()/
+// _importCollectionChild()) so a block image (hero/card/text_and_media)
+// already sitting in a folder-mode gallery's folder is never relocated out
+// of it. Exercised directly via reflection: no-op under 'flat', ignores
+// non-gallery/images-mode blocks, resolves a folder-mode gallery's folder
+// name to its Craft folder id (via the real, non-injected
+// AssetFolderPath::withSubfolder() sanitizer — assets-helper-stub already
+// loaded above), de-duplicates when two galleries share a folder, and
+// treats an unresolvable folder (e.g. a dry run, before anything's synced)
+// as simply nothing to protect, not an error.
+// -----------------------------------------------------------------------------
+echo "\nImportService — R9 protected-folder-set (Image Gallery folder mode)\n";
+
+$protectedFolderImages = new class {
+    public array $resolveCalls = [];
+    /** @var array<string, int> path => folder id */
+    public array $folderIdsByPath = [];
+
+    public function resolveFolderByPath(string $path, bool $dryRun)
+    {
+        $this->resolveCalls[] = $path;
+
+        if (!isset($this->folderIdsByPath[$path])) {
+            return null;
+        }
+
+        $id = $this->folderIdsByPath[$path];
+
+        return new class($id) {
+            public function __construct(public int $id)
+            {
+            }
+        };
+    }
+};
+
+$protectedFolderPlugin = new class {
+    public $images;
+};
+$protectedFolderPlugin->images = $protectedFolderImages;
+\matrixcreate\contentiqimporter\ContentIQImporter::$plugin = $protectedFolderPlugin;
+
+$galleryFolderBlock      = ['type' => 'image_gallery', 'fields' => ['source' => 'folder', 'folder' => 'Product Category Grid']];
+$galleryImagesModeBlock  = ['type' => 'image_gallery', 'fields' => ['source' => 'images', 'folder' => null]];
+$textBlockForProtection  = ['type' => 'text', 'fields' => ['columns' => 'singleColumn']];
+
+check(
+    "'flat' strategy: always empty, regardless of blocks — folder mode doesn't resolve there",
+    [],
+    callPrivate($importService, '_resolveProtectedGalleryFolderIds', [[$galleryFolderBlock], 'contentiq/homepage', false, false]),
+);
+
+check(
+    "'sitemap' strategy, no image_gallery blocks: empty",
+    [],
+    callPrivate($importService, '_resolveProtectedGalleryFolderIds', [[$textBlockForProtection], 'contentiq/homepage', true, false]),
+);
+
+check(
+    "'sitemap' strategy, images-mode gallery: empty — 'folder' key is ignored outside folder mode",
+    [],
+    callPrivate($importService, '_resolveProtectedGalleryFolderIds', [[$galleryImagesModeBlock], 'contentiq/homepage', true, false]),
+);
+
+$protectedFolderImages->folderIdsByPath = ['contentiq/homepage/product-category-grid' => 42];
+check(
+    "'sitemap' strategy, folder-mode gallery: resolves to the gallery folder's id",
+    [42],
+    callPrivate($importService, '_resolveProtectedGalleryFolderIds', [[$galleryFolderBlock], 'contentiq/homepage', true, false]),
+);
+
+check(
+    'two galleries sharing the same resolved folder: de-duplicated',
+    [42],
+    callPrivate($importService, '_resolveProtectedGalleryFolderIds', [[$galleryFolderBlock, $galleryFolderBlock], 'contentiq/homepage', true, false]),
+);
+
+$protectedFolderImages->folderIdsByPath = []; // not-yet-existing, e.g. a dry run before anything's synced
+check(
+    'unresolvable folder (e.g. dry-run not-yet-existing): contributes nothing, not an error',
+    [],
+    callPrivate($importService, '_resolveProtectedGalleryFolderIds', [[$galleryFolderBlock], 'contentiq/homepage', true, true]),
 );
 
 // -----------------------------------------------------------------------------
@@ -1323,6 +1625,256 @@ check(
     $nodesRenderer->render([
         ['type' => 'horizontalRule'],
     ]),
+);
+
+// -----------------------------------------------------------------------------
+// NodesRenderer — placeholder stripping (standalone bracketed strings like
+// "[Image gallery]", "[Product grid]", "[Testimonials]" — layout aides that
+// must never reach a richText field). Whole-node only:
+// NodesRenderer::PLACEHOLDER_PATTERN requires the ENTIRE trimmed text to be
+// one bracketed string, so a bracket occurring inside a sentence is left
+// completely untouched — that's what protects legitimate content like
+// "[sic]" mid-sentence, footnote markers, legal brackets, etc. Unconditional
+// — no config key, always on.
+// -----------------------------------------------------------------------------
+echo "\nNodesRenderer — placeholder stripping\n";
+
+check(
+    'render(): "[Image gallery]" as a whole paragraph is dropped',
+    '',
+    $nodesRenderer->render([
+        ['type' => 'paragraph', 'text' => '[Image gallery]'],
+    ]),
+);
+
+check(
+    'renderDocument(): "[Image gallery]" as a whole paragraph is dropped',
+    '',
+    $nodesRenderer->renderDocument([
+        ['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => '[Image gallery]']]],
+    ]),
+);
+
+check(
+    'render(): "[Product grid]" as a heading is dropped',
+    '',
+    $nodesRenderer->render([
+        ['type' => 'heading', 'level' => 2, 'text' => '[Product grid]'],
+    ]),
+);
+
+check(
+    'renderDocument(): "[Product grid]" as a heading is dropped',
+    '',
+    $nodesRenderer->renderDocument([
+        ['type' => 'heading', 'attrs' => ['level' => 2], 'content' => [['type' => 'text', 'text' => '[Product grid]']]],
+    ]),
+);
+
+check(
+    'render(): "[Testimonials]" as a whole blockquote is dropped',
+    '',
+    $nodesRenderer->render([
+        ['type' => 'blockquote', 'text' => '[Testimonials]'],
+    ]),
+);
+
+// A placeholder as one list item — that item is dropped, siblings kept.
+check(
+    'render(): a placeholder list item is dropped, siblings kept',
+    '<ul><li>Real item one</li><li>Real item two</li></ul>',
+    $nodesRenderer->render([
+        [
+            'type'  => 'list',
+            'items' => ['Real item one', '[Product grid]', 'Real item two'],
+        ],
+    ]),
+);
+
+check(
+    'renderDocument(): a placeholder listItem is dropped, siblings kept',
+    '<ul><li>Real item one</li><li>Real item two</li></ul>',
+    $nodesRenderer->renderDocument([
+        [
+            'type'    => 'bulletList',
+            'content' => [
+                ['type' => 'listItem', 'content' => [['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => 'Real item one']]]]],
+                ['type' => 'listItem', 'content' => [['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => '[Product grid]']]]]],
+                ['type' => 'listItem', 'content' => [['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => 'Real item two']]]]],
+            ],
+        ],
+    ]),
+);
+
+// A list of ONLY placeholders — the whole list is dropped, no empty <ul></ul>.
+check(
+    'render(): a list of only placeholders is dropped entirely — no empty <ul>',
+    '',
+    $nodesRenderer->render([
+        [
+            'type'  => 'list',
+            'items' => ['[Product grid]', '[Case study listing]'],
+        ],
+    ]),
+);
+
+check(
+    'renderDocument(): a bulletList of only placeholder items is dropped entirely — no empty <ul>',
+    '',
+    $nodesRenderer->renderDocument([
+        [
+            'type'    => 'bulletList',
+            'content' => [
+                ['type' => 'listItem', 'content' => [['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => '[Product grid]']]]]],
+                ['type' => 'listItem', 'content' => [['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => '[Case study listing]']]]]],
+            ],
+        ],
+    ]),
+);
+
+// The anti-regression test that matters most: a bracket occurring INSIDE a
+// sentence must never be touched.
+check(
+    'render(): a bracket inside a sentence is completely untouched',
+    '<p>our range [see fig 3] is wide</p>',
+    $nodesRenderer->render([
+        ['type' => 'paragraph', 'text' => 'our range [see fig 3] is wide'],
+    ]),
+);
+
+check(
+    'renderDocument(): a bracket inside a sentence is completely untouched',
+    '<p>our range [see fig 3] is wide</p>',
+    $nodesRenderer->renderDocument([
+        ['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => 'our range [see fig 3] is wide']]],
+    ]),
+);
+
+check(
+    'render(): a bracket inside a blockquote sentence is completely untouched',
+    '<blockquote><p>the study [ref. 12] found otherwise</p></blockquote>',
+    $nodesRenderer->render([
+        ['type' => 'blockquote', 'text' => 'the study [ref. 12] found otherwise'],
+    ]),
+);
+
+// The whole-node rule is unconditional, not a word list — a legitimate
+// "[sic]" that IS the entire node's text is dropped too, same as any other
+// bracketed placeholder. Asserted explicitly so it's never mistaken for a
+// regression later.
+check(
+    '"[sic]" alone as a whole paragraph IS dropped (whole-node rule, not a word list)',
+    '',
+    $nodesRenderer->render([
+        ['type' => 'paragraph', 'text' => '[sic]'],
+    ]),
+);
+
+// Bracketed text carried in content[] (inline nodes with marks), not just
+// the plain `text` string — marks must never rescue a placeholder.
+check(
+    'render(): a placeholder inside content[] (with a bold mark) is still dropped',
+    '',
+    $nodesRenderer->render([
+        [
+            'type'    => 'paragraph',
+            'text'    => '[Testimonials]',
+            'content' => [
+                ['type' => 'text', 'text' => '[Testimonials]', 'marks' => [['type' => 'bold']]],
+            ],
+        ],
+    ]),
+);
+
+// extractHeading(): a placeholder H1 must never become the lifted title — it's
+// dropped from the body like any other placeholder, and extraction keeps
+// scanning for the genuine H1.
+$extracted = $nodesRenderer->extractHeading([
+    ['type' => 'heading', 'attrs' => ['level' => 1], 'content' => [['type' => 'text', 'text' => '[Product grid]']]],
+    ['type' => 'heading', 'attrs' => ['level' => 1], 'content' => [['type' => 'text', 'text' => 'Real Title']]],
+    ['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => 'Body copy.']]],
+], 1);
+check('extractHeading(): a placeholder H1 is never lifted as the title', 'Real Title', $extracted['text']);
+check(
+    'extractHeading(): the placeholder H1 never reaches the rendered body',
+    '<p>Body copy.</p>',
+    $nodesRenderer->renderDocument($extracted['doc']),
+);
+
+// extractHeading(): when the ONLY H1-level heading is a placeholder, nothing
+// is extracted (no fake title), and the placeholder still never reaches the
+// rendered body once renderDocument() runs on the returned (here: untouched)
+// doc.
+$onlyPlaceholderDoc = [
+    ['type' => 'heading', 'attrs' => ['level' => 1], 'content' => [['type' => 'text', 'text' => '[Product grid]']]],
+    ['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => 'Body copy.']]],
+];
+$extractedOnlyPlaceholder = $nodesRenderer->extractHeading($onlyPlaceholderDoc, 1);
+check('extractHeading(): no real H1 present (only a placeholder) → nothing extracted', null, $extractedOnlyPlaceholder['text']);
+check(
+    'extractHeading(): the placeholder heading still never reaches the rendered body via renderDocument()',
+    '<p>Body copy.</p>',
+    $nodesRenderer->renderDocument($extractedOnlyPlaceholder['doc']),
+);
+
+// -----------------------------------------------------------------------------
+// NodesRenderer — placeholder count (per-page counter threaded into the sync
+// report — see getPlaceholderCount()/resetPlaceholderCount()).
+// -----------------------------------------------------------------------------
+echo "\nNodesRenderer — placeholder count\n";
+
+$countingRenderer = new \matrixcreate\contentiqimporter\services\NodesRenderer();
+$countingRenderer->resetPlaceholderCount();
+check('resetPlaceholderCount(): starts at zero', 0, $countingRenderer->getPlaceholderCount());
+
+$countingRenderer->render([
+    ['type' => 'paragraph', 'text' => '[Image gallery]'],
+    ['type' => 'paragraph', 'text' => 'Real content.'],
+    ['type' => 'list', 'items' => ['Real item', '[Product grid]']],
+]);
+check('render(): counts one dropped paragraph + one dropped list item', 2, $countingRenderer->getPlaceholderCount());
+
+$countingRenderer->resetPlaceholderCount();
+$countingRenderer->renderDocument([
+    ['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => '[Testimonials]']]],
+]);
+check('resetPlaceholderCount() zeroes the counter for the next page', 1, $countingRenderer->getPlaceholderCount());
+
+// -----------------------------------------------------------------------------
+// MatrixBuilder::_handleCollectionListingNodes() — superseded by the general
+// placeholder rule. NodesRenderer::render() now strips ALL standalone
+// bracketed strings (no vocabulary check), a strict superset of the old
+// narrow `/^\[[^\[\]]*\b(listings?|grids?)\b[^\[\]]*\]$/i` regex this method
+// used to run itself. These are the two examples from that regex's own
+// former docblock — still dropped under the general rule, with no
+// listing-specific filtering code left in MatrixBuilder at all (see
+// _handleCollectionListingNodes()'s current body — it's just a render() call).
+// Reuses $matrixBuilder/ContentIQImporter::$plugin (with the real
+// NodesRenderer) already set up above for the collection-child blocks[] tests.
+// -----------------------------------------------------------------------------
+echo "\nMatrixBuilder — collection listing placeholders (old narrow regex superseded)\n";
+
+check(
+    '_handleCollectionListingNodes(): "[Product grid]" is still dropped, real copy kept',
+    '<p>Real intro copy.</p>',
+    callPrivate($matrixBuilder, '_handleCollectionListingNodes', [
+        'introHtml',
+        [
+            ['type' => 'paragraph', 'text' => '[Product grid]'],
+            ['type' => 'paragraph', 'text' => 'Real intro copy.'],
+        ],
+    ])['introHtml'] ?? null,
+);
+
+check(
+    '_handleCollectionListingNodes(): "[Case study listing]" is still dropped',
+    '',
+    callPrivate($matrixBuilder, '_handleCollectionListingNodes', [
+        'introHtml',
+        [
+            ['type' => 'paragraph', 'text' => '[Case study listing]'],
+        ],
+    ])['introHtml'] ?? null,
 );
 
 // -----------------------------------------------------------------------------

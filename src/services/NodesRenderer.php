@@ -19,15 +19,82 @@ use yii\base\Component;
  *   - table               → <table><thead>/<tbody> with <th>/<td> cells
  *   - ctaButton           → <p><a href="url">label</a></p>
  *
- * No external dependencies. This service is stateless — all methods are pure.
+ * Placeholder stripping (unconditional, no config key): ContentiQ authors use
+ * standalone bracketed strings — "[Image gallery]", "[Product grid]",
+ * "[Testimonials]", anything — as layout aides marking where other content
+ * (a rendered listing, a gallery, a widget) will sit. There's no fixed
+ * vocabulary, so the match is structural, not a word list: a paragraph,
+ * heading, blockquote, or list item whose ENTIRE trimmed text is one
+ * bracketed string (see PLACEHOLDER_PATTERN) is dropped before rendering —
+ * never a bracket occurring inside a sentence (`our range [see fig 3] is
+ * wide` is untouched; that's the rule that protects `[sic]`-style legitimate
+ * content, mid-sentence). A list left with no items after stripping is
+ * dropped entirely rather than emitting an empty `<ul></ul>`. See
+ * _stripPlaceholderNodes()/_stripPlaceholderDocNodes() — the two entry
+ * points below are the only places this filtering happens; every other
+ * caller (MatrixBuilder, ImportService) reaches it through render()/
+ * renderDocument()/extractHeading().
+ *
+ * Not stateless: a per-page placeholder-drop counter is threaded through the
+ * three methods above and read via getPlaceholderCount() — see that
+ * method's docblock for the reset contract.
  *
  * @author Matrix Create <hello@matrixcreate.com>
  * @since 1.0.0
  */
 class NodesRenderer extends Component
 {
+    /**
+     * Matches a string whose ENTIRE (already-trimmed) content is a single
+     * bracketed placeholder — e.g. "[Image gallery]", "[Product grid]",
+     * "[sic]". No inner brackets allowed, so nested/adjacent bracket pairs
+     * never match. Deliberately does NOT match brackets occurring inside a
+     * sentence ("our range [see fig 3] is wide") — see the class docblock.
+     */
+    private const PLACEHOLDER_PATTERN = '/^\[[^\[\]]*\]$/';
+
+    // Private Properties
+    // =========================================================================
+
+    /**
+     * Count of placeholder nodes/items dropped since the last resetPlaceholderCount()
+     * call — see getPlaceholderCount().
+     *
+     * @var int
+     */
+    private int $_placeholdersDropped = 0;
+
     // Public Methods
     // =========================================================================
+
+    /**
+     * Resets the placeholder-drop counter to zero.
+     *
+     * Call once per page, before any render()/renderDocument()/extractHeading()
+     * call for that page — ImportService::importPage() is the single caller,
+     * right at the top, so every downstream nodes-> call for the page
+     * (MatrixBuilder::build(), collection-child content, CTA richText, …)
+     * accumulates into the same count. Mirrors MatrixBuilder's own
+     * $_warnings reset-at-start-of-build() idiom, one level up.
+     *
+     * @return void
+     */
+    public function resetPlaceholderCount(): void
+    {
+        $this->_placeholdersDropped = 0;
+    }
+
+    /**
+     * Returns the number of placeholder nodes/items dropped since the last
+     * resetPlaceholderCount() call — read by ImportService after building a
+     * page's result, to populate the sync report's per-page count.
+     *
+     * @return int
+     */
+    public function getPlaceholderCount(): int
+    {
+        return $this->_placeholdersDropped;
+    }
 
     /**
      * Renders an array of ContentIQ nodes to an HTML string.
@@ -43,6 +110,8 @@ class NodesRenderer extends Component
         if (empty($nodes)) {
             return '';
         }
+
+        $nodes = $this->_stripPlaceholderNodes($nodes);
 
         $html = '';
 
@@ -95,6 +164,8 @@ class NodesRenderer extends Component
             return '';
         }
 
+        $nodes = $this->_stripPlaceholderDocNodes($nodes);
+
         $html = '';
         foreach ($nodes as $node) {
             if (is_array($node)) {
@@ -130,8 +201,9 @@ class NodesRenderer extends Component
             return ['text' => null, 'doc' => $doc];
         }
 
-        $text = null;
-        $kept = [];
+        $text                       = null;
+        $kept                       = [];
+        $placeholderHeadingsSkipped = 0;
 
         foreach ($nodes as $node) {
             if ($text === null
@@ -139,7 +211,24 @@ class NodesRenderer extends Component
                 && ($node['type'] ?? '') === 'heading'
                 && (int)($node['attrs']['level'] ?? 0) === $level
             ) {
-                $text = $this->_plainText($node['content'] ?? []);
+                $headingText = $this->_plainText($node['content'] ?? []);
+
+                if ($this->_isPlaceholder($headingText)) {
+                    // A placeholder heading (e.g. "[Product grid]") is a
+                    // layout aide, never a real title — it must never become
+                    // the lifted title. Drop it from consideration and keep
+                    // scanning for a genuine H1; only counted below if this
+                    // doc is actually the one that ends up used (see the
+                    // $text === null early return just below the loop —
+                    // when nothing ever matches, the ORIGINAL doc is
+                    // returned untouched, and renderDocument()'s own pass
+                    // over that doc catches this same node — counting it
+                    // here too would double-count it).
+                    $placeholderHeadingsSkipped++;
+                    continue;
+                }
+
+                $text = $headingText;
                 continue; // drop this heading from the body
             }
 
@@ -150,6 +239,8 @@ class NodesRenderer extends Component
         if ($text === null) {
             return ['text' => null, 'doc' => $doc];
         }
+
+        $this->_placeholdersDropped += $placeholderHeadingsSkipped;
 
         if (isset($doc['content'])) {
             $doc['content'] = $kept;
@@ -185,6 +276,264 @@ class NodesRenderer extends Component
                 $text .= $node['text'];
             } elseif (isset($node['content']) && is_array($node['content'])) {
                 $text .= $this->_plainText($node['content']);
+            }
+        }
+
+        return trim($text);
+    }
+
+    /**
+     * Whether a (trimmed) text string is a standalone bracketed placeholder —
+     * see PLACEHOLDER_PATTERN and the class docblock.
+     *
+     * @param string $text
+     * @return bool
+     */
+    private function _isPlaceholder(string $text): bool
+    {
+        return (bool)preg_match(self::PLACEHOLDER_PATTERN, trim($text));
+    }
+
+    /**
+     * Extracts a ContentiQ block-format node's (paragraph/heading/blockquote)
+     * plain text — `content[]` inline nodes (marks stripped) when present,
+     * otherwise the `text` string. Same fallback _renderHeading()/
+     * _renderParagraph()/_renderBlockquote() use for rendering; here it's used
+     * only to test the placeholder shape, so marks never matter.
+     *
+     * @param array $node
+     * @return string
+     */
+    private function _blockNodeText(array $node): string
+    {
+        if (isset($node['content']) && is_array($node['content'])) {
+            return $this->_plainText($node['content']);
+        }
+
+        return is_scalar($node['text'] ?? null) ? trim((string)$node['text']) : '';
+    }
+
+    /**
+     * Filters placeholder nodes out of a ContentiQ block-format nodes array —
+     * the render() entry point. Drops a paragraph/heading/blockquote whose
+     * entire text is a standalone bracketed placeholder, and filters
+     * placeholder items out of a list (dropping the whole list if every item
+     * was one). See the class docblock; this is the ONLY place render()'s
+     * placeholder rule lives — every _handle*() caller in MatrixBuilder
+     * reaches it by calling render(), never by re-implementing the check.
+     *
+     * @param array $nodes
+     * @return array
+     */
+    private function _stripPlaceholderNodes(array $nodes): array
+    {
+        $kept = [];
+
+        foreach ($nodes as $node) {
+            if (!is_array($node)) {
+                $kept[] = $node;
+                continue;
+            }
+
+            $type = $node['type'] ?? '';
+
+            if ($type === 'paragraph' || $type === 'heading' || $type === 'blockquote') {
+                if ($this->_isPlaceholder($this->_blockNodeText($node))) {
+                    $this->_placeholdersDropped++;
+                    continue;
+                }
+
+                $kept[] = $node;
+                continue;
+            }
+
+            if ($type === 'list' || $type === 'ordered_list' || $type === 'unordered_list') {
+                $filtered = $this->_stripPlaceholderListItems($node);
+
+                if ($filtered === null) {
+                    continue; // every item was a placeholder — drop the whole list
+                }
+
+                $kept[] = $filtered;
+                continue;
+            }
+
+            $kept[] = $node;
+        }
+
+        return $kept;
+    }
+
+    /**
+     * Filters placeholder items out of a block-format list node's `items`/
+     * `itemContents` arrays (kept index-aligned — same pairing _renderList()
+     * reads). Returns null when every item was a placeholder, signalling the
+     * caller to drop the whole list rather than keep an empty one.
+     *
+     * @param array $node
+     * @return array|null
+     */
+    private function _stripPlaceholderListItems(array $node): ?array
+    {
+        $items = $node['items'] ?? null;
+
+        if (!is_array($items)) {
+            return $node; // no items[] to filter — leave the node untouched
+        }
+
+        $itemContents = $node['itemContents'] ?? null;
+
+        $keptItems        = [];
+        $keptItemContents = [];
+        $anyKept          = false;
+
+        foreach ($items as $i => $item) {
+            if (is_array($itemContents) && isset($itemContents[$i]) && is_array($itemContents[$i])) {
+                $text = $this->_plainText($itemContents[$i]);
+            } elseif (is_string($item)) {
+                $text = trim($item);
+            } else {
+                $text = is_array($item) && is_scalar($item['text'] ?? null) ? trim((string)$item['text']) : '';
+            }
+
+            if ($this->_isPlaceholder($text)) {
+                $this->_placeholdersDropped++;
+                continue;
+            }
+
+            $keptItems[] = $item;
+            if (is_array($itemContents) && isset($itemContents[$i])) {
+                $keptItemContents[] = $itemContents[$i];
+            }
+            $anyKept = true;
+        }
+
+        if (!$anyKept) {
+            return null;
+        }
+
+        $node['items'] = $keptItems;
+        if ($itemContents !== null) {
+            $node['itemContents'] = $keptItemContents;
+        }
+
+        return $node;
+    }
+
+    /**
+     * Filters placeholder nodes out of a raw ProseMirror doc-format nodes
+     * array — the renderDocument() entry point. Drops a paragraph/heading
+     * whose entire text is a standalone bracketed placeholder, and filters
+     * placeholder listItem children out of a bulletList/orderedList
+     * (dropping the whole list if every item was one). Blockquote is
+     * deliberately NOT covered here — the general rule only applies to
+     * paragraph/heading/list in the raw-ProseMirror shape (see the brief this
+     * shipped against); render()'s block-format path does cover blockquote.
+     *
+     * @param array $nodes
+     * @return array
+     */
+    private function _stripPlaceholderDocNodes(array $nodes): array
+    {
+        $kept = [];
+
+        foreach ($nodes as $node) {
+            if (!is_array($node)) {
+                $kept[] = $node;
+                continue;
+            }
+
+            $type = $node['type'] ?? '';
+
+            if ($type === 'paragraph' || $type === 'heading') {
+                if ($this->_isPlaceholder($this->_plainText($node['content'] ?? []))) {
+                    $this->_placeholdersDropped++;
+                    continue;
+                }
+
+                $kept[] = $node;
+                continue;
+            }
+
+            if ($type === 'bulletList' || $type === 'orderedList') {
+                $filtered = $this->_stripPlaceholderDocListItems($node);
+
+                if ($filtered === null) {
+                    continue; // every listItem was a placeholder — drop the whole list
+                }
+
+                $kept[] = $filtered;
+                continue;
+            }
+
+            $kept[] = $node;
+        }
+
+        return $kept;
+    }
+
+    /**
+     * Filters placeholder `listItem` children out of a raw ProseMirror
+     * bulletList/orderedList node's `content`. Returns null when nothing but
+     * (placeholder) listItems remain, signalling the caller to drop the whole
+     * list rather than keep an empty one.
+     *
+     * @param array $node
+     * @return array|null
+     */
+    private function _stripPlaceholderDocListItems(array $node): ?array
+    {
+        $children = $node['content'] ?? [];
+
+        if (!is_array($children)) {
+            return $node;
+        }
+
+        $kept        = [];
+        $hasListItem = false;
+
+        foreach ($children as $child) {
+            if (!is_array($child) || ($child['type'] ?? '') !== 'listItem') {
+                $kept[] = $child;
+                continue;
+            }
+
+            if ($this->_isPlaceholder($this->_docListItemText($child))) {
+                $this->_placeholdersDropped++;
+                continue;
+            }
+
+            $kept[]      = $child;
+            $hasListItem = true;
+        }
+
+        if (!$hasListItem) {
+            return null;
+        }
+
+        $node['content'] = $kept;
+
+        return $node;
+    }
+
+    /**
+     * A raw ProseMirror listItem's plain text — the concatenation of its
+     * direct paragraph children's inline text (marks stripped). Mirrors
+     * _renderListItem()'s own unwrapping of paragraph children; a nested
+     * list inside the listItem contributes nothing to this text (it isn't a
+     * paragraph), matching how _renderListItem() recurses it separately
+     * rather than flattening it to text.
+     *
+     * @param array $listItem
+     * @return string
+     */
+    private function _docListItemText(array $listItem): string
+    {
+        $text = '';
+
+        foreach ($listItem['content'] ?? [] as $child) {
+            if (is_array($child) && ($child['type'] ?? '') === 'paragraph') {
+                $text .= $this->_plainText($child['content'] ?? []);
             }
         }
 

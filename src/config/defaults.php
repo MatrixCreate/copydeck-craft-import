@@ -36,6 +36,9 @@
  *   'uspContent'      → entire block fields → {heading:{level,text}, items:[string]} → <hN>+<ul> HTML
  *   'collectionSection' → ContentIQ collection slug → Craft section handle (via content_types map;
  *                         unmapped slug stored raw + page warning)
+ *   'gallerySource'   → 'images'|'folder' → Craft imageSource dropdown value ('images'|'folders')
+ *   'assetFolder'     → raw ContentIQ folder name → resolved Craft folder UID string (or null);
+ *                       requires assetFolderStrategy 'sitemap' — see docs/assets.md (Image Gallery)
  *
  * Special contentiqKey '_block':
  *   When the contentiqKey is '_block' (in outerFields OR innerMatrix.fields), the entire block
@@ -199,6 +202,25 @@ return [
         'outerFields' => [
             'nodes'  => ['richText',        'nodes'],   // all content nodes → CKEditor HTML
             'images' => ['contentiqImages', 'images'],  // optional multiple assets (up to 10)
+        ],
+        'innerMatrix' => null,
+    ],
+
+    // Two modes, selected by the wire's 'source' key ('images' | 'folder'):
+    //   'images' — 'images'/'nodes' populate the Craft images/richText
+    //              fields; 'source'/'folder' still resolve (gallerySource →
+    //              'images', assetFolder → null) but are otherwise inert.
+    //   'folder' — 'images' is always [] on the wire; gallerySource → the
+    //              Craft imageSource dropdown's 'folders' value, assetFolder
+    //              → the resolved Craft folder UID (requires
+    //              assetFolderStrategy 'sitemap' — see docs/assets.md, R9).
+    'image_gallery' => [
+        'outerType'   => 'imageGallery',
+        'outerFields' => [
+            'source' => ['imageSource', 'gallerySource'],
+            'images' => ['images',      'images'],  // reuses the same handler as 'custom' — no cap
+            'folder' => ['assetFolder', 'assetFolder'],
+            'nodes'  => ['richText',    'nodes'],
         ],
         'innerMatrix' => null,
     ],

@@ -71,6 +71,20 @@ class ImageImportService extends Component
     private ?VolumeFolder $_folder = null;
 
     /**
+     * The exact folder path string `prepare()` was called with this run —
+     * NOT derived from `$_folder->path` (Craft's `VolumeFolder::$path`
+     * carries a trailing slash, so re-deriving from it would need an
+     * `rtrim()` at every call site). Exposed via `getPreparedFolderPath()`
+     * for MatrixBuilder's Image Gallery `assetFolder` handler, which needs
+     * the page's already-resolved folder as the base for
+     * `AssetFolderPath::withSubfolder()` — `_resolveFieldByHandler()` itself
+     * is never given the page's folder. See docs/assets.md (Image Gallery).
+     *
+     * @var string|null
+     */
+    private ?string $_folderPath = null;
+
+    /**
      * Whether a reused image whose current folder differs from the resolved
      * target should be moved there — `'sitemap'` `assetFolderStrategy` only.
      * See `prepare()` and `_relocateIfNeeded()`.
@@ -78,6 +92,23 @@ class ImageImportService extends Component
      * @var bool
      */
     private bool $_relocate = false;
+
+    /**
+     * Craft VolumeFolder ids that `_relocateIfNeeded()` must never move an
+     * asset OUT of this run — R9, Image Gallery folder mode (docs/assets.md).
+     * A block image (hero/card/text_and_media) that also happens to sit
+     * inside a page's folder-mode gallery folder would otherwise be relocated
+     * out of it by the normal sitemap-relocation behaviour, silently
+     * shrinking the gallery. Populated by `setProtectedFolderIds()` — see
+     * `ImportService::setProtectedFolderIds()` call sites for when/why.
+     * Reset to empty on every `prepare()` call (once per page) so a previous
+     * page's protected set can never leak into the next one's `assets[]`
+     * filing step (which runs BEFORE this run's own protected set is known —
+     * see `ImportService`).
+     *
+     * @var int[]
+     */
+    private array $_protectedFolderIds = [];
 
     /**
      * Legacy (flat-strategy) base folder path to fall back to in Step B when
@@ -174,10 +205,16 @@ class ImageImportService extends Component
         ?string $legacyFolderPath = null,
     ): void {
         [$this->_volume, $this->_folder] = $this->_resolveVolumeAndFolder($volumeHandle, $folderPath, $dryRun, 'assetVolume');
+        $this->_folderPath       = $folderPath;
         $this->_relocate         = $relocate;
         $this->_legacyFolderPath = ($relocate && $legacyFolderPath !== null && $legacyFolderPath !== $folderPath)
             ? $legacyFolderPath
             : null;
+        // See $_protectedFolderIds — this run's page hasn't been scanned for
+        // Image Gallery folder-mode blocks yet (that happens later, right
+        // before MatrixBuilder::build() — see ImportService), so start empty
+        // rather than carrying over whatever the previous page set.
+        $this->_protectedFolderIds = [];
     }
 
     /**
@@ -250,6 +287,75 @@ class ImageImportService extends Component
     }
 
     /**
+     * The current page's resolved images-target folder path, as passed to
+     * `prepare()` — the base `AssetFolderPath::withSubfolder()` needs to
+     * append a per-item sub-folder. Null before `prepare()` has ever been
+     * called this run. See `$_folderPath`.
+     *
+     * @return string|null
+     */
+    public function getPreparedFolderPath(): ?string
+    {
+        return $this->_folderPath;
+    }
+
+    /**
+     * The current page's resolved images-target volume — the "expected
+     * volume" an Image Gallery folder-mode `assetFolder` resolution must
+     * sit in before its UID is trusted (`AssetFolderField` performs no
+     * validation of its own — see docs/assets.md). Null before `prepare()`
+     * has ever been called this run, or when the configured `assetVolume`
+     * couldn't be resolved.
+     *
+     * @return Volume|null
+     */
+    public function getPreparedVolume(): ?Volume
+    {
+        return $this->_volume;
+    }
+
+    /**
+     * Public counterpart of `_resolveFolderByPath()`, scoped to this run's
+     * already-`prepare()`d images volume. Used by MatrixBuilder's Image
+     * Gallery `assetFolder` handler (resolving a folder-mode gallery's
+     * target folder to write its UID) and by `ImportService`'s R9
+     * protected-folder-set computation (resolving the same folder to its
+     * Craft id — see `setProtectedFolderIds()`). Same dry-run/real-run split
+     * as every other folder lookup here: `findFolder()` (read-only, never
+     * creates a folder record) on dry-run/CP Preview, and
+     * `ensureFolderByFullPathAndVolume()` only on a real run. Returns null
+     * (no throw) when the images volume itself is unresolved — a
+     * misconfigured `assetVolume`, or `prepare()` never called this run.
+     *
+     * @param string $path   Full folder path within the prepared images volume.
+     * @param bool   $dryRun
+     * @return VolumeFolder|null
+     */
+    public function resolveFolderByPath(string $path, bool $dryRun): ?VolumeFolder
+    {
+        if ($this->_volume === null) {
+            return null;
+        }
+
+        return $this->_resolveFolderByPath($this->_volume, $path, $dryRun);
+    }
+
+    /**
+     * Sets this run's R9 protected-folder-id set — see `$_protectedFolderIds`.
+     * Call after this page's own `assets[]` have been filed (so a folder-mode
+     * gallery's own folder already exists by the time block images resolve)
+     * and before any block image import (`MatrixBuilder::build()`) — see
+     * `ImportService`'s call sites in `importPage()`/`_importCollectionChild()`.
+     *
+     * @param int[] $folderIds
+     * @return void
+     */
+    public function setProtectedFolderIds(array $folderIds): void
+    {
+        $this->_protectedFolderIds = array_map('intval', $folderIds);
+    }
+
+    /**
      * Enables (or disables) the dev-only SSRF-refusal bypass for this run's
      * downloads — `allowPrivateAssetUrls` in config/contentiq.php. Call
      * before any `importFromField()`/`importFile()` call; a project that
@@ -279,8 +385,10 @@ class ImageImportService extends Component
     {
         $this->_volume                   = null;
         $this->_folder                   = null;
+        $this->_folderPath               = null;
         $this->_relocate                 = false;
         $this->_legacyFolderPath         = null;
+        $this->_protectedFolderIds       = [];
         $this->_documentVolume           = null;
         $this->_documentFolder           = null;
         $this->_documentRelocate         = false;
@@ -370,7 +478,13 @@ class ImageImportService extends Component
      * somewhere else — the 'sitemap' `assetFolderStrategy`'s relocation
      * behaviour (docs/assets.md). A no-op (`relocated: false`, no move
      * attempted) when `$relocate` is off, on a dry run (relocation never
-     * happens on a preview), or the asset is already in the target folder.
+     * happens on a preview), the asset is already in the target folder, OR
+     * (R9, Image Gallery folder mode) the asset's CURRENT folder is in this
+     * run's protected set (`$_protectedFolderIds`) — see
+     * `setProtectedFolderIds()`. The protected-folder check is an ADDITIONAL
+     * early-return alongside the existing ones, not a replacement for any of
+     * them: legacy root relocation and the normal ContentiQ-folder sub-level
+     * moves are unaffected for every asset outside that set.
      *
      * `moveAsset()` → `Asset::_relocateFile()` → (same-volume move)
      * `craft\fs\Local::renameFile()` calls PHP's `@rename()` and never
@@ -394,6 +508,18 @@ class ImageImportService extends Component
     private function _relocateIfNeeded(Asset $asset, VolumeFolder $targetFolder, bool $relocate, bool $dryRun): array
     {
         if (!$relocate || $dryRun || (int)$asset->folderId === $targetFolder->id) {
+            return ['relocated' => false, 'warning' => null];
+        }
+
+        // R9 — a block image (hero/card/text_and_media) that already sits
+        // inside a page's Image Gallery folder-mode folder must stay there:
+        // Craft references the gallery's images by folder membership
+        // (craft.assets().folderId(...) in the entry template), and moving
+        // one out would silently shrink the gallery even though the block
+        // field itself still points at the right asset. See docs/assets.md
+        // (Image Gallery → R9) and ImportService's protected-folder-set
+        // computation.
+        if (in_array((int)$asset->folderId, $this->_protectedFolderIds, true)) {
             return ['relocated' => false, 'warning' => null];
         }
 

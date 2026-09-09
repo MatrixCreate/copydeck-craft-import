@@ -70,6 +70,7 @@ class ImportService extends Component
      *   images:        [{filename, reused}],
      *   pageAssets:    {created: int, reused: int, relocated: int, failed: int},
      *   pageFiles:     {created: int, reused: int, relocated: int, failed: int},
+     *   placeholdersDropped: int,
      *   warnings:      string[],
      *   error:         string|null,
      * }
@@ -81,6 +82,15 @@ class ImportService extends Component
      */
     public function importPage(array $data, bool $dryRun = false, bool $verbose = false): array
     {
+        // Placeholder-drop counter (NodesRenderer::render()/renderDocument()/
+        // extractHeading() — see its class docblock) is per-page state on a
+        // shared plugin-singleton service, so it must be reset here, before
+        // any of this page's rendering runs — including the collection-child
+        // branch (_importCollectionChild()), which importPage() dispatches to
+        // below. Mirrors MatrixBuilder's own $_warnings reset-at-start idiom,
+        // one level up.
+        ContentIQImporter::$plugin->nodes->resetPlaceholderCount();
+
         $result = $this->_emptyResult();
 
         try {
@@ -239,6 +249,17 @@ class ImportService extends Component
             }
             $result['blockNotes'] = implode("\n\n", $noteLines);
 
+            // R9 (Image Gallery folder mode, docs/assets.md) — protect this
+            // page's folder-mode gallery folder(s) from the sitemap
+            // relocation a shared block image (hero/card/text_and_media)
+            // would otherwise be subject to below. Computed AFTER step 4's
+            // _importPageAssets() so a gallery's own assets[] have already
+            // created its folder, and BEFORE build() so every block image
+            // resolved by it honours the protection.
+            ContentIQImporter::$plugin->images->setProtectedFolderIds(
+                $this->_resolveProtectedGalleryFolderIds($blocks, $assetTargets['pageFolder'], $assetTargets['isSitemap'], $dryRun),
+            );
+
             $built = ContentIQImporter::$plugin->matrixBuilder->build($contentBlocks, $dryRun, $slug, $existingBlockMap);
 
             $result['blocks']      = $built['blockReport'];
@@ -273,6 +294,7 @@ class ImportService extends Component
             // -----------------------------------------------------------------------
             if ($dryRun) {
                 $result['success'] = true;
+                $result['placeholdersDropped'] = ContentIQImporter::$plugin->nodes->getPlaceholderCount();
 
                 return $result;
             }
@@ -384,6 +406,7 @@ class ImportService extends Component
 
                     $result['entryId'] = $existing->id;
                     $result['success'] = true;
+                    $result['placeholdersDropped'] = ContentIQImporter::$plugin->nodes->getPlaceholderCount();
 
                     return $result;
                 }
@@ -431,6 +454,10 @@ class ImportService extends Component
 
             return $this->_fatal($result, 'Exception: ' . $e->getMessage());
         }
+
+        // Covers the 11b (new-entry) success path, which falls through to
+        // here rather than returning early like 11a's existing-entry branch.
+        $result['placeholdersDropped'] = ContentIQImporter::$plugin->nodes->getPlaceholderCount();
 
         return $result;
     }
@@ -895,6 +922,7 @@ class ImportService extends Component
             $result['skipped']      = true;
             $result['success']      = true;
             $result['sectionLabel'] = $contentType;
+            $result['placeholdersDropped'] = ContentIQImporter::$plugin->nodes->getPlaceholderCount();
             $result['warnings'][]   = "Content type '{$contentType}' has no mapping — page skipped. Map it under ContentiQ → Mappings (or add a content_types override in config/contentiq.php).";
             Craft::warning("ContentIQImporter: unmapped content_type '{$contentType}' for page '{$slug}' — skipped.", __METHOD__);
 
@@ -967,6 +995,14 @@ class ImportService extends Component
         // machinery the page path uses. Absent or empty blocks[] leaves this
         // entirely untouched (pre-§7.1 behaviour).
         if ($hasBlocks) {
+            // R9 (Image Gallery folder mode, docs/assets.md) — see the
+            // matching call in importPage() for the full rationale. $blocks
+            // was already extracted above (line ~943); $assetTargets from
+            // this method's own _preparePageAssetTargets() call.
+            ContentIQImporter::$plugin->images->setProtectedFolderIds(
+                $this->_resolveProtectedGalleryFolderIds($blocks, $assetTargets['pageFolder'], $assetTargets['isSitemap'], $dryRun),
+            );
+
             $blockFieldValues = $this->_buildBlockFieldValues($data, $dryRun, $result, $entryType->getFieldLayout());
 
             // Route this content_type's blocks to its configured Matrix field
@@ -1034,6 +1070,7 @@ class ImportService extends Component
 
         if ($dryRun) {
             $result['success'] = true;
+            $result['placeholdersDropped'] = ContentIQImporter::$plugin->nodes->getPlaceholderCount();
 
             return $result;
         }
@@ -1054,6 +1091,7 @@ class ImportService extends Component
 
             $result['entryId'] = $existing->id;
             $result['success'] = true;
+            $result['placeholdersDropped'] = ContentIQImporter::$plugin->nodes->getPlaceholderCount();
 
             return $result;
         }
@@ -1080,6 +1118,7 @@ class ImportService extends Component
 
         $result['entryId'] = $entry->id;
         $result['success'] = true;
+        $result['placeholdersDropped'] = ContentIQImporter::$plugin->nodes->getPlaceholderCount();
 
         return $result;
     }
@@ -1138,6 +1177,11 @@ class ImportService extends Component
             // Matrix/hero/SEO/card image field.
             'pageAssets'    => $this->_emptyAssetCounts(),
             'pageFiles'     => $this->_emptyAssetCounts(),
+            // Bracketed-placeholder nodes (e.g. "[Product grid]") dropped
+            // from this page's rendered content — see
+            // NodesRenderer::getPlaceholderCount(); set from the counter at
+            // each return point below (mirrors 'success').
+            'placeholdersDropped' => 0,
         ];
     }
 
@@ -1166,6 +1210,10 @@ class ImportService extends Component
         Craft::error("ContentIQImporter: $message", __METHOD__);
         $result['success'] = false;
         $result['error']   = $message;
+        // Single choke point for every failure return in importPage() and
+        // _importCollectionChild() — captures whatever this page's rendering
+        // dropped before the failure, same as a success return would.
+        $result['placeholdersDropped'] = ContentIQImporter::$plugin->nodes->getPlaceholderCount();
 
         return $result;
     }
@@ -1447,6 +1495,80 @@ class ImportService extends Component
         }
 
         return ['pageAssets' => $pageAssets, 'pageFiles' => $pageFiles, 'warnings' => $warnings];
+    }
+
+    /**
+     * R9 (Image Gallery folder mode, docs/assets.md, plan §4b) — computes the
+     * page's "protected folder" set for `ImageImportService::setProtectedFolderIds()`.
+     *
+     * Scans `$blocks` for `image_gallery` blocks in `'folder'` source mode,
+     * resolves each referenced ContentIQ folder name to its Craft
+     * `VolumeFolder` id (same page-folder-plus-subfolder path a folder-mode
+     * gallery's own `assets[]` items already filed into — see
+     * `AssetFolderPath::withSubfolder()`), and returns the resulting ids.
+     * Passed to `ImageImportService::setProtectedFolderIds()` BEFORE
+     * `MatrixBuilder::build()` so `_relocateIfNeeded()` leaves a block image
+     * (hero/card/text_and_media) alone when it already sits in one of these
+     * folders — otherwise sitemap relocation would silently empty the
+     * gallery, since the Craft `imageGallery` entry's folder mode renders by
+     * folder membership, not by an explicit relation.
+     *
+     * No-op under `'flat'` (`$isSitemap` false) — folder mode itself doesn't
+     * resolve there (`MatrixBuilder::_handleAssetFolder()` warns and leaves
+     * the field null), so there is nothing to protect. Resolution uses
+     * `ImageImportService::resolveFolderByPath()`, which mirrors every other
+     * folder lookup in this plugin: read-only on `$dryRun`, so this never
+     * creates a folder record on a preview; a not-yet-existing folder (e.g. a
+     * folder-mode gallery with zero export-eligible images) simply resolves
+     * to nothing, which is harmless — an empty gallery folder has nothing to
+     * protect.
+     *
+     * Two documented residual limits (plan §4b/§9 R9), neither fixed here:
+     * this is per-page only — an asset physically sitting in ANOTHER page's
+     * gallery folder is still relocated, breaking that page's gallery; and
+     * it is a no-op under `'flat'` sites, consistent with folder mode not
+     * working there at all.
+     *
+     * @param array  $blocks     This page's `blocks[]` (pre hero/CTA split — only
+     *                           `image_gallery` entries are inspected).
+     * @param string $pageFolder This page's resolved folder path
+     *                           (`_preparePageAssetTargets()`'s `pageFolder`).
+     * @param bool   $isSitemap  `_preparePageAssetTargets()`'s `isSitemap`.
+     * @param bool   $dryRun
+     * @return int[] Craft VolumeFolder ids.
+     */
+    private function _resolveProtectedGalleryFolderIds(array $blocks, string $pageFolder, bool $isSitemap, bool $dryRun): array
+    {
+        if (!$isSitemap) {
+            return [];
+        }
+
+        $folderIds = [];
+
+        foreach ($blocks as $block) {
+            if (!is_array($block) || ($block['type'] ?? '') !== 'image_gallery') {
+                continue;
+            }
+
+            $fields = $block['fields'] ?? [];
+            if (!is_array($fields) || ($fields['source'] ?? null) !== 'folder') {
+                continue;
+            }
+
+            $folderName = is_string($fields['folder'] ?? null) ? trim($fields['folder']) : '';
+            if ($folderName === '') {
+                continue;
+            }
+
+            $fullPath = AssetFolderPath::withSubfolder($pageFolder, $folderName);
+            $folder   = ContentIQImporter::$plugin->images->resolveFolderByPath($fullPath, $dryRun);
+
+            if ($folder !== null) {
+                $folderIds[] = $folder->id;
+            }
+        }
+
+        return array_values(array_unique($folderIds));
     }
 
     /**
