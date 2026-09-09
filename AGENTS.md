@@ -105,14 +105,14 @@ Optional `~/.zshrc` functions (aliases break on the nested quoting) wrap the two
 
 ### Testing
 
-No Craft runtime or PHPUnit harness exists in this repo — only pure-PHP, Craft-free classes have automated coverage, run as standalone scripts:
+No PHPUnit harness or live Craft install exists in this repo — coverage is two zero-dependency standalone scripts:
 
 ```bash
-php tests/run-transforms.php   # GlobalsTransforms — address/hours/country/URL-drift logic
+php tests/run-transforms.php   # GlobalsTransforms, plus MatrixBuilder/NodesRenderer/ImportService against a hand-stubbed Craft/Yii harness (tests/fixtures/craft-stubs.php) — not a real Craft install
 php tests/run-security.php     # UrlSafety (SSRF guard) + TempFileSafety (path-traversal guard)
 ```
 
-Run whichever script covers the helper you changed. There is no automated coverage for `MatrixBuilder`, `ImportService`, or anything else that touches a live Craft instance — those need a real Craft install to verify (see the `preserveBlockIdentity` live-validation checklist as the sharpest example of this gap).
+Run whichever script covers the code you changed. `craft-stubs.php`'s docblock spells out exactly how far the stubbed Craft/Yii surface extends; anything beyond it still needs a real Craft install to verify (see the `preserveBlockIdentity` live-validation checklist as the sharpest example of this gap).
 
 ### PROGRESS.md doctrine
 
