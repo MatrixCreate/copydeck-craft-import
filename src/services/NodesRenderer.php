@@ -19,7 +19,8 @@ use yii\base\Component;
  *   - table               → <table><thead>/<tbody> with <th>/<td> cells
  *   - ctaButton           → <p><a href="url">label</a></p>
  *
- * Placeholder stripping (unconditional, no config key): ContentiQ authors use
+ * Placeholder stripping (on by default, no config key; the Custom block opts
+ * out — see the EXCEPTION note below): ContentiQ authors use
  * standalone bracketed strings — "[Image gallery]", "[Product grid]",
  * "[Testimonials]", anything — as layout aides marking where other content
  * (a rendered listing, a gallery, a widget) will sit. There's no fixed
@@ -34,6 +35,18 @@ use yii\base\Component;
  * points below are the only places this filtering happens; every other
  * caller (MatrixBuilder, ImportService) reaches it through render()/
  * renderDocument()/extractHeading().
+ *
+ * EXCEPTION — the Custom block (`contentiqCustom`). Its richText is free
+ * markup an editor typed by hand in ContentiQ's markup editor, so a
+ * bracketed string there is deliberate content, not a layout aide standing
+ * in for something the CMS will render. `MatrixBuilder::_handleCustomNodes()`
+ * is the single caller that passes `$stripPlaceholders = false`; nothing is
+ * stripped and nothing is counted for that block. Custom is the SOLE
+ * exemption: every other block — global, image_gallery, collection_listing,
+ * text, text_and_media, … — still strips, as do the raw-ProseMirror paths
+ * (renderDocument()/extractHeading()) that carry a collection child's Body
+ * Text block and, where a child has no marked blocks at all, its unmarked
+ * document content.
  *
  * Not stateless: a per-page placeholder-drop counter is threaded through the
  * three methods above and read via getPlaceholderCount() — see that
@@ -102,16 +115,24 @@ class NodesRenderer extends Component
      * Returns an empty string for null or empty input — callers should handle
      * empty-string fields as they see fit.
      *
+     * Whole-node bracketed placeholders are stripped by default. Pass
+     * `$stripPlaceholders = false` to render them as ordinary text — the
+     * Custom block's path only, via `MatrixBuilder::_handleCustomNodes()`.
+     * See the class docblock's EXCEPTION note before adding another caller.
+     *
      * @param array|null $nodes
+     * @param bool       $stripPlaceholders Whether to drop whole-node bracketed placeholders.
      * @return string
      */
-    public function render(?array $nodes): string
+    public function render(?array $nodes, bool $stripPlaceholders = true): string
     {
         if (empty($nodes)) {
             return '';
         }
 
-        $nodes = $this->_stripPlaceholderNodes($nodes);
+        if ($stripPlaceholders) {
+            $nodes = $this->_stripPlaceholderNodes($nodes);
+        }
 
         $html = '';
 

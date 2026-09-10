@@ -773,6 +773,7 @@ class MatrixBuilder extends Component
     ): array {
         return match ($handlerType) {
             'nodes'                  => $this->_handleNodes($craftHandle, $value),
+            'customNodes'            => $this->_handleCustomNodes($craftHandle, $value),
             'mediaNodes'             => $this->_handleMediaNodes($craftHandle, $value),
             'textMediaMedia'         => $this->_handleTextMediaMedia($value, $imageReport, $dryRun),
             'image'                  => $this->_handleImage($craftHandle, $value, $imageReport, $dryRun),
@@ -805,6 +806,35 @@ class MatrixBuilder extends Component
     private function _handleNodes(string $handle, mixed $value): array
     {
         $html = ContentIQImporter::$plugin->nodes->render(is_array($value) ? $value : []);
+
+        return [$handle => $html];
+    }
+
+    /**
+     * Renders a ContentIQ nodes array to HTML, KEEPING bracketed placeholder
+     * text — the Custom block's `nodes` handler.
+     *
+     * Identical to _handleNodes() but for the second render() argument. Every
+     * other block treats a standalone bracketed string ("[Client quote]",
+     * "[Product category grid]") as a layout aide marking where the CMS will
+     * render something else, and drops it — see
+     * NodesRenderer::PLACEHOLDER_PATTERN. The Custom block is different: its
+     * content is free markup an editor typed by hand in ContentiQ, so those
+     * brackets are content the editor meant to keep, and they must reach
+     * richText verbatim.
+     *
+     * Because the strip never runs here, these nodes are also never counted
+     * into the per-page placeholder tally
+     * (NodesRenderer::getPlaceholderCount()) that the sync report and CLI
+     * show — which is correct: nothing was dropped.
+     *
+     * @param string $handle
+     * @param mixed  $value
+     * @return array<string, string>
+     */
+    private function _handleCustomNodes(string $handle, mixed $value): array
+    {
+        $html = ContentIQImporter::$plugin->nodes->render(is_array($value) ? $value : [], false);
 
         return [$handle => $html];
     }

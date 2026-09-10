@@ -197,11 +197,16 @@ return [
         'innerMatrix' => null,
     ],
 
+    // The ONLY block that keeps bracketed placeholder text. Custom content is
+    // free markup typed by hand in ContentiQ's markup editor, so a standalone
+    // "[Client quote]" there is content the editor meant, not a layout aide —
+    // hence the 'customNodes' handler rather than 'nodes'. Every other block
+    // drops such nodes (NodesRenderer::PLACEHOLDER_PATTERN).
     'custom' => [
         'outerType'   => 'contentiqCustom',
         'outerFields' => [
-            'nodes'  => ['richText',        'nodes'],   // all content nodes → CKEditor HTML
-            'images' => ['contentiqImages', 'images'],  // optional multiple assets (up to 10)
+            'nodes'  => ['richText',        'customNodes'],  // all content nodes → CKEditor HTML, placeholders kept
+            'images' => ['contentiqImages', 'images'],       // optional multiple assets (up to 10)
         ],
         'innerMatrix' => null,
     ],

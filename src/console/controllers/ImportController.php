@@ -581,7 +581,8 @@ class ImportController extends Controller
 
         // Bracketed placeholder nodes (e.g. "[Product grid]") dropped rather
         // than written into this page's rich text — see
-        // NodesRenderer::getPlaceholderCount().
+        // NodesRenderer::getPlaceholderCount(). Custom blocks keep their
+        // placeholders, so they never count towards this.
         $placeholdersDropped = $result['placeholdersDropped'] ?? 0;
 
         if ($placeholdersDropped > 0) {

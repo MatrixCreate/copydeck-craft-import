@@ -1878,6 +1878,95 @@ check(
 );
 
 // -----------------------------------------------------------------------------
+// MatrixBuilder — the Custom block KEEPS bracketed placeholder text.
+//
+// Custom content is free markup an editor typed by hand in ContentiQ, so a
+// standalone "[Client quote]" there is content they meant, not a layout aide
+// standing in for something the CMS renders. It is the one block exempt from
+// NodesRenderer's placeholder strip, via the 'customNodes' handler. The
+// contrast tests below run the SAME nodes through _handleNodes() (what global
+// and image_gallery use) to prove the exemption is per-handler and hasn't
+// leaked into every block.
+// -----------------------------------------------------------------------------
+echo "\nMatrixBuilder — Custom block keeps placeholders\n";
+
+$customPlaceholderNodes = [
+    ['type' => 'paragraph', 'text' => '[Client quote]'],
+    ['type' => 'paragraph', 'text' => 'Real copy.'],
+];
+
+check(
+    '_handleCustomNodes(): "[Client quote]" reaches richText as ordinary text',
+    '<p>[Client quote]</p><p>Real copy.</p>',
+    callPrivate($matrixBuilder, '_handleCustomNodes', ['richText', $customPlaceholderNodes])['richText'] ?? null,
+);
+
+check(
+    '_handleNodes(): the same nodes on any OTHER block still drop the placeholder',
+    '<p>Real copy.</p>',
+    callPrivate($matrixBuilder, '_handleNodes', ['richText', $customPlaceholderNodes])['richText'] ?? null,
+);
+
+check(
+    '_handleCustomNodes(): "[Product category grid]" as a whole paragraph is kept too',
+    '<p>[Product category grid]</p>',
+    callPrivate($matrixBuilder, '_handleCustomNodes', [
+        'richText',
+        [['type' => 'paragraph', 'text' => '[Product category grid]']],
+    ])['richText'] ?? null,
+);
+
+// A placeholder list item, and a list of ONLY placeholders — both survive on
+// Custom, where the strip's "drop the emptied list too" rule never runs.
+check(
+    '_handleCustomNodes(): a placeholder list item is kept alongside its siblings',
+    '<ul><li>Real item</li><li>[Product grid]</li></ul>',
+    callPrivate($matrixBuilder, '_handleCustomNodes', [
+        'richText',
+        [['type' => 'list', 'items' => ['Real item', '[Product grid]']]],
+    ])['richText'] ?? null,
+);
+
+// Non-array/empty input must behave exactly as _handleNodes() does.
+check(
+    '_handleCustomNodes(): a non-array value renders an empty string, as _handleNodes() does',
+    '',
+    callPrivate($matrixBuilder, '_handleCustomNodes', ['richText', null])['richText'] ?? null,
+);
+
+// The strip never runs on Custom, so nothing is counted into the per-page
+// tally the sync report and CLI show — "0 placeholders stripped" is correct
+// there, because none were.
+$customCountingRenderer = new \matrixcreate\contentiqimporter\services\NodesRenderer();
+$customCountingRenderer->resetPlaceholderCount();
+$customCountingRenderer->render($customPlaceholderNodes, false);
+check(
+    'render($nodes, false): kept placeholders are never added to the drop counter',
+    0,
+    $customCountingRenderer->getPlaceholderCount(),
+);
+
+// The wiring itself — defaults.php must point the Custom block's 'nodes' key
+// at 'customNodes'. Without this assertion the exemption regresses silently:
+// every test above calls the handler directly and would still pass.
+$customBlockDefaults = require __DIR__ . '/../src/config/defaults.php';
+check(
+    "defaults.php: the custom block's 'nodes' key uses the 'customNodes' handler",
+    'customNodes',
+    $customBlockDefaults['custom']['outerFields']['nodes'][1] ?? null,
+);
+check(
+    "defaults.php: the global block still uses the stripping 'nodes' handler",
+    'nodes',
+    $customBlockDefaults['global']['outerFields']['nodes'][1] ?? null,
+);
+check(
+    "defaults.php: the image_gallery block still uses the stripping 'nodes' handler",
+    'nodes',
+    $customBlockDefaults['image_gallery']['outerFields']['nodes'][1] ?? null,
+);
+
+// -----------------------------------------------------------------------------
 // Summary.
 // -----------------------------------------------------------------------------
 echo "\n" . ($failures === 0 ? "OK" : "FAILED") . ": {$passes} passed, {$failures} failed\n";

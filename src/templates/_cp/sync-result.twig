@@ -138,8 +138,10 @@
     {% endif %}
     {# Bracketed placeholder nodes (e.g. "[Product grid]") ContentiQ's authors
        left as layout aides — see NodesRenderer::getPlaceholderCount() — that
-       were dropped rather than written into this page's rich text. Renders
-       nothing when zero. #}
+       were dropped rather than written into this page's rich text. Custom
+       blocks are exempt from the strip and so never counted here, which is
+       why a page of hand-written Custom markup reads zero. Renders nothing
+       when zero. #}
     {% set placeholdersDropped = page.placeholdersDropped ?? 0 %}
     {% if placeholdersDropped %}
         <div class="light" style="font-size:12px; margin-top:2px;">

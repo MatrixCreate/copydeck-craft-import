@@ -66,6 +66,19 @@ exhaustive list. Most are one-line converters (plain string → `<p>`, `{level,
 text}` → `<hN>`); the ones with real behaviour (`mediaNodes`, `textMediaMedia`,
 `faqNodes`, `collectionSection`) are covered in their own sections below.
 
+**Bracketed placeholders, and the one block exempt from the strip.** ContentiQ
+authors mark where the CMS will render something else with a standalone
+bracketed paragraph, heading or list item — `[Client quote]`,
+`[Product category grid]`, `[Blog Listing]`. Those nodes are dropped before
+richText render, whole-node only, so brackets inside a sentence survive; the
+rule and its counter live in `NodesRenderer` (see its class docblock, which is
+the authority). The exception is the **Custom** block: its content is free
+markup typed by hand in ContentiQ's markup editor, so bracketed text there is
+content the editor meant and is written verbatim. That is why `custom` maps its
+`nodes` key to the `customNodes` handler rather than `nodes` — the only
+difference between the two. Nothing is counted for Custom blocks, so a page of
+hand-written Custom markup reports zero placeholders stripped.
+
 **Per-project overrides.** `config/contentiq.php`'s `'blockOverrides'` key
 replaces a block's *entire* definition — not merged field-by-field.
 `MatrixBuilder::prepare()` does `array_replace($defaults, $overrides)` once
