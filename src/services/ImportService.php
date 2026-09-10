@@ -3052,9 +3052,7 @@ class ImportService extends Component
      * @return array<string, mixed> Field values keyed by the Matrix field handle
      *         (config['matrixField']) and, when a hero block is present, either
      *         'enableHero'/'hero' (ContentBlock shape) or 'enableHero'/'heroTitle'/etc
-     *         (flat shape — see _buildHeroField()). Also carries 'showContentBlocks' => true
-     *         whenever the Matrix is non-empty — harmless where the handle doesn't exist on
-     *         the target field layout, since _filterToValidFields() drops unknown handles.
+     *         (flat shape — see _buildHeroField()).
      */
     private function _buildBlockFieldValues(array $data, bool $dryRun, array &$result, ?FieldLayout $targetFieldLayout = null): array
     {
@@ -3149,17 +3147,6 @@ class ImportService extends Component
                 ? ($this->_buildFooterGlobalCtaField($targetFieldLayout, $config, $result, $footerGlobalCtaIntent) ?? [])
                 : [],
         );
-
-        // §7.4 — article/caseStudy gate content-block rendering behind a
-        // "Content Blocks" lightswitch (handle: showContentBlocks) that
-        // defaults to false and is hidden in the CP behind a condition rule.
-        // Without this, blocks import correctly and render nothing. team has
-        // no such gate (its elementCondition is null), but writing this
-        // unconditionally is harmless there too — _filterToValidFields() drops
-        // handles the target field layout doesn't have.
-        if (!empty($matrixData)) {
-            $fieldValues['showContentBlocks'] = true;
-        }
 
         return $fieldValues;
     }
